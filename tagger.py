@@ -3,11 +3,164 @@
 import sys
 import numpy as np
 from math import log10
+import copy
 
-# todo prob transitions qt | qt-1 -> fait
-# todo prob emission ot | qt -> fait
-# todo prob pi q0 -> fait
 
+class MorphoSyntacticTagger:
+
+    def __init__(self):
+        self.__list_voc_states = []
+        self.__list_voc_obs = []
+
+        # these attributes will be filled according to the content of the actual corpus and shouldn't be altered
+        self.__state_frequencies = {}
+        self.__state_transition_frequencies = {}
+        self.__observation_emission_frequencies = {}
+
+        # these attributes are the parameters of the HMM model
+        self.__state_transition_probabilities = {}
+        self.__observation_emission_probabilities = {}
+        self.__state_pi_probabilities = {}
+
+    def build_state_frequency_matrix(self, init_value=0):
+        for state in self.__list_voc_states:
+            self.__state_frequencies[state] = init_value
+
+    def build_state_transition_frequency_matrix(self, depth, init_value=0):
+        if depth == 1:
+            for state in self.__list_voc_states:
+                self.__state_transition_frequencies[state] = init_value
+
+        elif depth > 1:
+            self.build_state_transition_frequency_matrix(depth=depth-1)
+            terminus = self.__state_transition_frequencies
+            self.__state_transition_frequencies = {}
+            for state in self.__list_voc_states:
+                self.__state_transition_frequencies[state] = copy.deepcopy(terminus)
+        return
+
+    def build_observation_emission_frequency_matrix(self, init_value=0):
+        for observation in self.__list_voc_obs:
+            self.__observation_emission_frequencies[observation] = {}
+            for state in self.__list_voc_states:
+                self.__observation_emission_frequencies[observation][state] = init_value
+
+    def count_observation_emission_frequencies(self, tuple_sequence):
+        for obs_state in tuple_sequence:
+            self.__observation_emission_frequencies[obs_state[0]][obs_state[1]] += 1
+
+    def count_state_transition_frequencies(self, sequence, N):
+        def increment_n_gram_frequency(state_transition_frequency, n_gram):
+            if len(n_gram) == 1:
+                state_transition_frequency[n_gram[0]] += 1
+            else:
+                increment_n_gram_frequency(state_transition_frequency[n_gram[-1]], n_gram[:-1])
+
+        n_gram_indexes = range(N)
+
+        length_sequence = len(sequence)
+        while n_gram_indexes[-1] < length_sequence:
+            increment_n_gram_frequency(self.__state_transition_frequencies, [sequence[n] for n in n_gram_indexes])
+            a = [sequence[n] for n in n_gram_indexes]
+            n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
+
+    def count_state_frequencies(self, sequence):
+        for state in sequence:
+            self.__state_frequencies[state] += 1
+
+    def hmm_training(self, corpus, N=2, smoothing=None):
+
+        if len(self.__list_voc_obs) == 0:
+            self.set_voc_obs(list(set(corpus[:, 0])))
+
+        if len(self.__list_voc_states) == 0:
+            self.set_voc_states(list(set(corpus[:, 1])))
+
+        # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
+        self.build_state_transition_frequency_matrix(depth=N)
+        self.build_state_frequency_matrix()
+        self.build_observation_emission_frequency_matrix()
+
+        # counting state frequencies and transition frequencies could have been done at once but I wanted to keep
+        # the code clear
+        self.count_state_frequencies(corpus[:, 1])
+        self.count_state_transition_frequencies(corpus[:, 1], N)
+        self.count_observation_emission_frequencies(corpus)
+
+
+
+        self.compute_state_transition_probabilities_matrix(self.__state_transition_frequencies, N)
+        c = 0
+        for state1 in self.__state_transition_probabilities:
+            for state2 in self.__state_transition_probabilities[state1]:
+                # for state3 in self.__state_transition_probabilities[state1][state2]:
+                if state2 == 8:
+                    c += self.__state_transition_probabilities[state1][state2]
+        exit()
+
+        if smoothing == "Laplace":
+            # Laplace smoothing consists on adding a weight to each N-gram probability.
+            # todo: at the moment, this weight is 1, it might be interesting to parametrize this
+            pass
+
+
+
+    def predict(self):
+        pass
+
+    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth):
+        """
+        Return the matrix of transitions as -log probabilities between token formatted as a dict of dict.
+
+          - The first level of hierarchy is the token at position t (qt)
+          - The second is the token at position t-1 (qt-1)
+          - The value is -log(P(qt|qt-1))
+
+        :param token_sequence: the sequence of tokens
+        :return: the matrix
+        """
+
+        if depth == 1:
+            tmp_dict = {}
+            for state in self.__list_voc_states:
+                tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
+            return tmp_dict
+
+        elif depth > 1:
+            for state1 in self.__list_voc_states:
+                self.__state_transition_probabilities[state1] = \
+                    self.compute_state_transition_probabilities_matrix(state_transition_frequencies[state1], depth=depth-1)
+            return self.__state_transition_probabilities
+
+        # def transition_prob(dict_token_occurences, dict_dict_transition_occurences):
+        #     dict_dict_transition_log_probs = {}
+        #
+        #     for token in dict_dict_transition_occurences:
+        #         dict_dict_transition_log_probs[token] = {}
+        #         for last_token in dict_dict_transition_occurences[token]:
+        #             dict_dict_transition_log_probs[token][last_token] = \
+        #                 -log10(dict_dict_transition_occurences[token][last_token] / dict_token_occurences[last_token])
+        #             # todo a tester -> ca a l'air ok
+        #
+        #     return dict_dict_transition_log_probs
+        #
+        # for state in self.__state_transition_frequencies:
+
+    def compute_emission_probabilities(self):
+
+
+        pass
+
+    def compute_pi_probabilities(self):
+
+
+        pass
+
+    def set_voc_states(self, list_voc_states):
+        self.__list_voc_states = list_voc_states
+
+    def set_voc_obs(self, list_voc_obs):
+        self.__list_voc_obs = list_voc_obs
 
 def open_encoded_corpus_obs_state(s_filename):
     """
@@ -59,60 +212,6 @@ def open_vocabulary(s_filename):
             dict_encode_decode[k] = stripped_line
             k += 1
     return dict_decode_encode, dict_encode_decode
-
-
-def build_two_elm_combinatorial(token_list1, token_list2, init_value=0):
-    combinatorial = {}
-    for token1 in token_list1:
-        combinatorial[token1] = {}
-        for token2 in token_list2:
-            combinatorial[token1][token2] = init_value
-    return combinatorial
-
-
-def transition_prob(token_sequence, dict_token_occurences, dict_dict_transition_occurences):
-    """
-    Return the matrix of transitions as -log probabilities between token formatted as a dict of dict.
-
-      - The first level of hierarchy is the token at position t (qt)
-      - The second is the token at position t-1 (qt-1)
-      - The value is -log(P(qt|qt-1))
-
-    :param token_sequence: the sequence of tokens
-    :return: the matrix
-    """
-    int_last_position = 0
-    int_current_position = 1
-    int_array_size = token_sequence.size
-
-    dict_token_occurences[token_sequence[0]] += 1
-    while int_current_position < int_array_size:
-        last_token = token_sequence[int_last_position]
-        current_token = token_sequence[int_current_position]
-        if current_token not in dict_token_occurences:
-            dict_token_occurences[current_token] = 1
-            dict_dict_transition_occurences[current_token] = {}
-        else:
-            dict_token_occurences[current_token] += 1
-
-        if last_token in dict_dict_transition_occurences[current_token]:
-            dict_dict_transition_occurences[current_token][last_token] += 1
-        else:
-            dict_dict_transition_occurences[current_token][last_token] = 1
-
-        int_current_position += 1
-        int_last_position += 1
-
-    dict_dict_transition_log_probs = {}
-
-    for token in dict_dict_transition_occurences:
-        dict_dict_transition_log_probs[token] = {}
-        for last_token in dict_dict_transition_occurences[token]:
-            dict_dict_transition_log_probs[token][last_token] = \
-                -log10(dict_dict_transition_occurences[token][last_token] / dict_token_occurences[last_token])
-            # todo a tester -> ca a l'air ok
-
-    return dict_dict_transition_log_probs
 
 
 def emission_prob(token_couples, dict_state_occurences, dict_dict_emission_occurences):
@@ -174,6 +273,15 @@ def pi_prob(token_sequence, delimiter, dict_starting_token_occurence):
         dict_pi[token] = -log10(dict_starting_token_occurence[token] / int_nb_starts)
 
     return dict_pi
+
+
+def build_two_elm_combinatorial(token_list1, token_list2, init_value=0):
+    combinatorial = {}
+    for token1 in token_list1:
+        combinatorial[token1] = {}
+        for token2 in token_list2:
+            combinatorial[token1][token2] = init_value
+    return combinatorial
 
 
 def viterbi(sequence_obs, labels, transition_matrix, emission_matrix, pi_probs):
@@ -264,8 +372,6 @@ def test(corpus, dict_encode_state, transition_probabilities, emission_probabili
 
     print("%.2f %% d'erreurs" % (float(error_count)/float(length_result)*float(100)))
 
-
-
 def main():
     path_corpus_train = sys.argv[1]
     path_corpus_test = sys.argv[4]
@@ -290,7 +396,7 @@ def main():
                                                transition_occurence_matrix_init)
 
     state_occurence_init = {}
-    length_voc_state_plus_length_voc_lex = len(dict_encode_state) + len(dict_encode_obs)
+    length_voc_state_plus_length_voc_lex = len(dict_encode_obs)
     for token in dict_encode_state.keys():
         state_occurence_init[token] = length_voc_state_plus_length_voc_lex
 
@@ -323,14 +429,17 @@ def main():
     #                emission_probabilities,
     #                pi_probabilities)]))
 
-    test(open_encoded_corpus_obs_state(path_corpus_train),
-         dict_encode_state,
-         transition_probabilities,
-         emission_probabilities,
-         pi_probabilities)
+    # test(open_encoded_corpus_obs_state(path_corpus_test),
+    #      dict_encode_state,
+    #      transition_probabilities,
+    #      emission_probabilities,
+    #      pi_probabilities)
 
     # print(pi_prob(test[:, 1]))
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    new = MorphoSyntacticTagger()
+    path_corpus_train = sys.argv[1]
+    new.hmm_training(open_encoded_corpus_obs_state(path_corpus_train), N=2)
