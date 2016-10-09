@@ -6,38 +6,44 @@ from math import log10
 import copy
 
 
-class MorphoSyntacticTagger:
+class NGramModel:
 
-    def __init__(self):
+    def __init__(self, n=2, smoothing="Laplace"):
+        self.__N = n
+        self.__smoothing = smoothing
+
         self.__list_voc_states = []
         self.__list_voc_obs = []
 
-        # these attributes will be filled according to the content of the actual corpus and shouldn't be altered
-        self.__state_frequencies = {}
-        self.__state_transition_frequencies = {}
-        self.__observation_emission_frequencies = {}
-
         # these attributes are the parameters of the HMM model
-        self.__state_transition_probabilities = {}
+        # each index i of the list consist of the i+1 -gram frequencies/probabilities
+        self.__state_transition_frequencies = []
+        self.__state_transition_probabilities = []
+
+        self.__observation_emission_frequencies = {}
         self.__observation_emission_probabilities = {}
-        self.__state_pi_probabilities = {}
 
     def build_state_frequency_matrix(self, init_value=0):
         for state in self.__list_voc_states:
             self.__state_frequencies[state] = init_value
 
     def build_state_transition_frequency_matrix(self, depth, init_value=0):
-        if depth == 1:
-            for state in self.__list_voc_states:
-                self.__state_transition_frequencies[state] = init_value
+        if depth < 1:
+            exit("NGramModel.build_state_transition_frequency_matrix has been called with depth = 0. It should be > 0.")
 
-        elif depth > 1:
-            self.build_state_transition_frequency_matrix(depth=depth-1)
-            terminus = self.__state_transition_frequencies
-            self.__state_transition_frequencies = {}
+        if depth == 1:
+            dict_state_transition_frequency_matrix = {}
             for state in self.__list_voc_states:
-                self.__state_transition_frequencies[state] = copy.deepcopy(terminus)
-        return
+                dict_state_transition_frequency_matrix[state] = init_value
+
+        else:
+            dict_state_transition_frequency_matrix = self.build_state_transition_frequency_matrix(depth=depth-1, init_value=init_value)
+            terminus = dict_state_transition_frequency_matrix
+            dict_state_transition_frequency_matrix = {}
+            for state in self.__list_voc_states:
+                dict_state_transition_frequency_matrix[state] = copy.deepcopy(terminus)
+
+        return dict_state_transition_frequency_matrix
 
     def build_observation_emission_frequency_matrix(self, init_value=0):
         for observation in self.__list_voc_obs:
@@ -45,30 +51,51 @@ class MorphoSyntacticTagger:
             for state in self.__list_voc_states:
                 self.__observation_emission_frequencies[observation][state] = init_value
 
+    def counter(self, sequence):
+        sequence_index = 0
+        length_sequence = len(sequence)
+
+        while sequence_index < length_sequence:
+            (obs, state) = sequence[sequence_index]
+
+            sub_sequence_states = []
+            while obs != 0:
+                (obs, state) = sequence[sequence_index]
+                self.__observation_emission_frequencies[obs][state] += 1
+                self.__state_frequencies[state] += 1
+                sub_sequence_states.append(state)
+                sequence_index += 1
+            self.count_state_transition_frequencies(sub_sequence_states)
+
+            self.__observation_emission_frequencies[0][0] += 1
+            self.__state_frequencies[0] += 1
+
+            sequence_index += 1
+
     def count_observation_emission_frequencies(self, tuple_sequence):
         for (obs, state) in tuple_sequence:
             self.__observation_emission_frequencies[obs][state] += 1
 
-    def count_state_transition_frequencies(self, sequence, N):
+    def count_state_transition_frequencies(self, sequence):
         def increment_n_gram_frequency(state_transition_frequency, n_gram):
             if len(n_gram) == 1:
                 state_transition_frequency[n_gram[0]] += 1
             else:
                 increment_n_gram_frequency(state_transition_frequency[n_gram[-1]], n_gram[:-1])
 
-        n_gram_indexes = range(N)
-
+        n_gram_indexes = range(self.__N)
         length_sequence = len(sequence)
+
         while n_gram_indexes[-1] < length_sequence:
-            increment_n_gram_frequency(self.__state_transition_frequencies, [sequence[n] for n in n_gram_indexes])
-            a = [sequence[n] for n in n_gram_indexes]
+            n_gram_states = [sequence[n] for n in n_gram_indexes]
+            increment_n_gram_frequency(self.__state_transition_frequencies, n_gram_states)
             n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
 
     def count_state_frequencies(self, sequence):
         for state in sequence:
             self.__state_frequencies[state] += 1
 
-    def hmm_training(self, corpus, N=2, smoothing=None):
+    def ngram_training(self, corpus):
 
         if len(self.__list_voc_obs) == 0:
             self.set_voc_obs(list(set(corpus[:, 0])))
@@ -76,36 +103,106 @@ class MorphoSyntacticTagger:
         if len(self.__list_voc_states) == 0:
             self.set_voc_states(list(set(corpus[:, 1])))
 
-        # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
-        self.build_state_transition_frequency_matrix(depth=N)
-        self.build_state_frequency_matrix()
-        self.build_observation_emission_frequency_matrix()
+        if self.__smoothing == "Laplace":
+            # Laplace smoothing consists on adding a weight to each N-gram probability.
+            # todo: at the moment, this weight is 1, it might be interesting to parametrize this
+            # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
+            for i in range(self.__N):
+                self.__state_transition_frequencies.append(
+                    self.build_state_transition_frequency_matrix(
+                        depth=i+1,
+                        init_value=1))
+            self.build_observation_emission_frequency_matrix(init_value=1)
+        else:
+            self.build_state_transition_frequency_matrix(depth=self.__N)
+            self.build_state_frequency_matrix()
+            self.build_observation_emission_frequency_matrix()
 
+        self.counter(corpus)
         # counting state frequencies and transition frequencies could have been done at once but I wanted to keep
         # the code clear
-        self.count_state_frequencies(corpus[:, 1])
-        self.count_state_transition_frequencies(corpus[:, 1], N)
+        # self.count_state_frequencies(corpus[:, 1])
         self.count_observation_emission_frequencies(corpus)
 
-
+        sequence_index = 0
+        length_sequence = len(sequence)
+        while sequence_index < length_sequence:
+            sub_sequence = []
+            while sequence[sequence_index][0] != 0:
+                sub_sequence.append(sequence[sequence_index])
+                sequence_index += 1
+                self.count_state_transition_frequencies(corpus[:, 1])
+            sequence_index += 1
 
         self.__state_transition_probabilities = \
             self.compute_state_transition_probabilities_matrix(self.__state_transition_frequencies, N)
+        self.compute_emission_probabilities()
 
+    def viterbi(self, sequence_obs):
+        # def viterbi(, labels, transition_matrix, emission_matrix, pi_probs):
 
-        if smoothing == "Laplace":
-            # Laplace smoothing consists on adding a weight to each N-gram probability.
-            # todo: at the moment, this weight is 1, it might be interesting to parametrize this
-            pass
+        backtrack = {}
+        sequence_obs_size = len(sequence_obs)
+        score = [{}]
+
+        # initialization
+        for y in self.__list_voc_states:
+            score[0][y] = self.__[y] + emission_matrix[sequence_obs[0]][y]
+
+        # for each observable in the sequence
+        for i in range(1, sequence_obs_size):
+            # setup the score dict for this observable
+            score.append({})
+            # we'll calculate the score for each possible label
+            for y_current in labels:
+                best_label_score = None
+                best_label = None
+                # the score is calculated in term of the label of the last position
+                for y_last in labels:
+                    # for each label at position i-1, we calculate the score at position i
+                    score_y_last = score[i - 1][y_last]
+                    score_transition = transition_matrix[y_current][y_last]
+                    score_emission = emission_matrix[sequence_obs[i]][y_current]
+                    y_last_score = score_y_last + score_transition + score_emission
+                    # we are in log probs so we have to min the score
+                    if best_label_score is None or y_last_score < best_label_score:
+                        best_label = y_last
+                        best_label_score = y_last_score
+
+                # store the best score for each position of the observable sequence and each possible label
+                score[i][y_current] = best_label_score
+                # store the label of the position i-1 which gave the best score for position i
+                if i not in backtrack:
+                    backtrack[i] = {}
+                backtrack[i][y_current] = best_label
+
+        i = sequence_obs_size - 1
+        output = [None] * sequence_obs_size
+        best_last_score = min(score[i].values())
+        y = None
+        for label, score in score[i].items():
+            if score == best_last_score:
+                y = label
+                output[i] = y
+                break
+
+        while i > 0:
+            output[i - 1] = backtrack[i][y]
+            y = backtrack[i][y]
+            i -= 1
+        return output
 
     def predict(self):
         pass
 
-    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth):
+    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth, smoothing=None):
         if depth == 1:
             tmp_dict = {}
             for state in self.__list_voc_states:
-                tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
+                if smoothing == 'Laplace':
+                    tmp_dict[state] = state_transition_frequencies[state] / (self.__state_frequencies[state] + len(self.__list_voc_states))
+                else:
+                    tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
             return tmp_dict
 
         elif depth > 1:
@@ -114,17 +211,17 @@ class MorphoSyntacticTagger:
                 tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(state_transition_frequencies[state1], depth=depth-1)
             return tmp_dict
 
-    def compute_emission_probabilities(self):
+    def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
             self.__observation_emission_probabilities[observable] = {}
             for state in self.__list_voc_states:
-                self.__observation_emission_probabilities[observable][state] = \
-                    self.__observation_emission_frequencies[observable][state] / self.__state_frequencies[state]
-
-    def compute_pi_probabilities(self):
-
-
-        pass
+                if smoothing == 'Laplace':
+                    self.__observation_emission_probabilities[observable][state] = \
+                        self.__observation_emission_frequencies[observable][state] / (
+                        self.__state_frequencies[state] + len(self.__list_voc_obs))
+                else:
+                    self.__observation_emission_probabilities[observable][state] = \
+                        self.__observation_emission_frequencies[observable][state] / self.__state_frequencies[state]
 
     def set_voc_states(self, list_voc_states):
         self.__list_voc_states = list_voc_states
@@ -137,6 +234,8 @@ def open_encoded_corpus_obs_state(s_filename):
     Open the specified file and return the array containing its informations.
 
     Each line of the input file should contain 2 members splitted by a spacing character.
+    Sequence should be separated by one line. If there is multiple blank lines between sequence, only one will be taken
+    into account.
 
     :param s_filename: The path to the input file.
     :return: Array os shape (n, 2) n is the number of lines of the file.
@@ -146,14 +245,22 @@ def open_encoded_corpus_obs_state(s_filename):
         f = open(s_filename, 'r')
     except FileNotFoundError:
         exit("The specified corpus: " + str(s_filename) + "does not exist.")
-    list_tuples_obs_state = []
+    list_tuples_obs_state = [tuple((0, 0))]
     s_line = f.readline()
     while s_line != "":
         s_stripped_line = s_line.strip()
         if s_stripped_line != "":
             tuple_obs_state = tuple(map(int, s_stripped_line.split()))
             list_tuples_obs_state.append(tuple_obs_state)
+        else:
+            # if the line is blank, it means it is the end of a sequence
+            if list_tuples_obs_state[-1] != tuple((0, 0)):
+                # I don't want to consider multiple blank lines
+                tuple_obs_state = tuple((0, 0))
+                list_tuples_obs_state.append(tuple_obs_state)
         s_line = f.readline()
+    if list_tuples_obs_state[-1] != tuple((0, 0)):
+        list_tuples_obs_state.append(tuple((0, 0)))
     return np.array(list_tuples_obs_state)
 
 
@@ -185,30 +292,6 @@ def open_vocabulary(s_filename):
 
 
 
-
-
-def pi_prob(token_sequence, delimiter, dict_starting_token_occurence):
-    int_nb_starts = 0
-    start = True
-    for token in token_sequence:
-        if token == delimiter:
-            start = True
-            continue
-        elif start == False:
-            continue
-        else:
-            start = False
-            int_nb_starts += 1
-            if token not in dict_starting_token_occurence:
-                dict_starting_token_occurence[token] = 1
-            else:
-                dict_starting_token_occurence[token] += 1
-
-    dict_pi = {}
-    for token in dict_starting_token_occurence:
-        dict_pi[token] = -log10(dict_starting_token_occurence[token] / int_nb_starts)
-
-    return dict_pi
 
 
 def build_two_elm_combinatorial(token_list1, token_list2, init_value=0):
@@ -294,7 +377,7 @@ def test(corpus, dict_encode_state, transition_probabilities, emission_probabili
     print("%.2f %% d'erreurs" % (float(error_count)/float(length_result)*float(100)))
 
 def main():
-    # path_corpus_train = sys.argv[1]
+    path_corpus_train = sys.argv[1]
     # path_corpus_test = sys.argv[4]
     # path_voc_observable = sys.argv[2]
     # path_voc_states = sys.argv[3]
@@ -314,18 +397,18 @@ def main():
     #                                                              dict_encode_state.keys(),
     #                                                              init_value=1)
 
-    emission_probabilities = emission_prob(open_encoded_corpus_obs_state(path_corpus_train),
-                                           state_occurence_init,
-                                           emission_occurence_matrix_init)
-
-    state_occurence_init = {}
-    length_voc_state = len(dict_encode_state)
-    for token in dict_encode_state.keys():
-        state_occurence_init[token] = length_voc_state
-
-    pi_probabilities = pi_prob(open_encoded_corpus_obs_state(path_corpus_train)[:, 1],
-                               dict_decode_state["PONCT"],
-                               state_occurence_init)
+    # emission_probabilities = emission_prob(open_encoded_corpus_obs_state(path_corpus_train),
+    #                                        state_occurence_init,
+    #                                        emission_occurence_matrix_init)
+    #
+    # state_occurence_init = {}
+    # length_voc_state = len(dict_encode_state)
+    # for token in dict_encode_state.keys():
+    #     state_occurence_init[token] = length_voc_state
+    #
+    # pi_probabilities = pi_prob(open_encoded_corpus_obs_state(path_corpus_train)[:, 1],
+    #                            dict_decode_state["PONCT"],
+    #                            state_occurence_init)
     #
     # print("\n".join([dict_encode_state[i] for i in viterbi([dict_decode_obs[i] for i in['Une',
     #                                                                                     'regrettable',
@@ -348,6 +431,6 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    new = MorphoSyntacticTagger()
+    new = NGramModel(n=3)
     path_corpus_train = sys.argv[1]
-    new.hmm_training(open_encoded_corpus_obs_state(path_corpus_train), N=2)
+    new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train))
