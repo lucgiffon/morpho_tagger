@@ -4,7 +4,7 @@ import sys
 import numpy as np
 from math import log10
 import copy
-
+import time
 
 class NGramModel:
 
@@ -24,7 +24,7 @@ class NGramModel:
         self.__observation_emission_frequencies = {}
         self.__observation_emission_probabilities = {}
 
-    def build_state_transition_frequency_matrix(self, depth, init_value=0):
+    def build_state_transition_frequency_matrix(self, depth):
         if depth < 1:
             # This should never happen
             exit("NGramModel.build_state_transition_frequency_matrix has been called with depth = 0. It should be > 0.")
@@ -34,11 +34,11 @@ class NGramModel:
             dict_state_transition_frequency_matrix = {}
             # each leef of the tree is initialized with the init_value
             for state in self.__list_voc_states:
-                dict_state_transition_frequency_matrix[state] = init_value
+                dict_state_transition_frequency_matrix[state] = 0
 
         else:
             # calculate lower-hierarchy branches
-            dict_state_transition_frequency_matrix = self.build_state_transition_frequency_matrix(depth=depth-1, init_value=init_value)
+            dict_state_transition_frequency_matrix = self.build_state_transition_frequency_matrix(depth=depth-1)
             terminus = dict_state_transition_frequency_matrix
             dict_state_transition_frequency_matrix = {}
             # plug lower-hierarchy branches to the current level
@@ -47,12 +47,12 @@ class NGramModel:
 
         return dict_state_transition_frequency_matrix
 
-    def build_observation_emission_frequency_matrix(self, init_value=0):
+    def build_observation_emission_frequency_matrix(self):
         # The observation emission matrix is always of dimension 2
         for observation in self.__list_voc_obs:
             self.__observation_emission_frequencies[observation] = {}
             for state in self.__list_voc_states:
-                self.__observation_emission_frequencies[observation][state] = init_value
+                self.__observation_emission_frequencies[observation][state] = 0
 
     def counter(self, sequence):
         sequence_index = 0
@@ -114,21 +114,32 @@ class NGramModel:
                 increment_n_gram_frequency(self.__state_transition_frequencies[n+1], n_gram_states)
                 n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
 
-    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth, smoothing=None):
+    def compute_state_transition_probabilities_matrix(self, n_gram_frequencies, n_minus_1_gram_frequencies, depth, first=False, smoothing=None):
         if depth == 1:
             tmp_dict = {}
+            if n_minus_1_gram_frequencies == {}:
+                for state in self.__list_voc_states:
+                    n_minus_1_gram_frequencies[state] = len(self.__list_voc_states)
             for state in self.__list_voc_states:
-                if smoothing == 'Laplace':
-                    tmp_dict[state] = state_transition_frequencies[state] / (self.__state_frequencies[state] + len(self.__list_voc_states))
-                else:
-                    tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
+                try:
+                    tmp_dict[state] = -log10(n_gram_frequencies[state] / n_minus_1_gram_frequencies[state])
+                except:
+                    tmp_dict[state] = 1111111
             return tmp_dict
 
-        elif depth > 1:
+        elif depth >= 2:
             tmp_dict = {}
             for state1 in self.__list_voc_states:
-                tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(state_transition_frequencies[state1], depth=depth-1)
+                if first:
+                    tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(n_gram_frequencies[state1],
+                                                                                          n_minus_1_gram_frequencies,
+                                                                                          depth=depth-1)
+                else:
+                    tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(n_gram_frequencies[state1],
+                                                                                          n_minus_1_gram_frequencies[state1],
+                                                                                          depth=depth-1)
             return tmp_dict
+
 
 
     def ngram_training(self, corpus):
@@ -149,15 +160,22 @@ class NGramModel:
         # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
         for i in range(self.__N):
             self.__state_transition_frequencies[i+1] = self.build_state_transition_frequency_matrix(
-                depth=i+1,
-                init_value=init_value)
-        self.build_observation_emission_frequency_matrix(init_value=init_value)
+                depth=i+1)
+        self.build_observation_emission_frequency_matrix()
 
         self.counter(corpus)
 
-        self.__state_transition_probabilities = \
-            self.compute_state_transition_probabilities_matrix(self.__state_transition_frequencies, N)
+        for i in range(self.__N):
+            n_gram_frequencies = self.__state_transition_frequencies[i+1]
+            if i > 0:
+                n_minus_1_gram_frequencies = self.__state_transition_frequencies[i]
+            else:
+                n_minus_1_gram_frequencies = {}
+            self.__state_transition_probabilities[i+1] = \
+                self.compute_state_transition_probabilities_matrix(n_gram_frequencies, n_minus_1_gram_frequencies, depth=i+1, first=True)
+
         self.compute_emission_probabilities()
+        return
 
     def viterbi(self, sequence_obs):
         # def viterbi(, labels, transition_matrix, emission_matrix, pi_probs):
@@ -221,13 +239,11 @@ class NGramModel:
         for observable in self.__list_voc_obs:
             self.__observation_emission_probabilities[observable] = {}
             for state in self.__list_voc_states:
-                if smoothing == 'Laplace':
+                try:
                     self.__observation_emission_probabilities[observable][state] = \
-                        self.__observation_emission_frequencies[observable][state] / (
-                        self.__state_frequencies[state] + len(self.__list_voc_obs))
-                else:
-                    self.__observation_emission_probabilities[observable][state] = \
-                        self.__observation_emission_frequencies[observable][state] / self.__state_frequencies[state]
+                        -log10(self.__observation_emission_frequencies[observable][state] / self.__state_transition_frequencies[1][state])
+                except:
+                    self.__observation_emission_probabilities[observable][state] = 111111
 
     def set_voc_states(self, list_voc_states):
         self.__list_voc_states = list_voc_states
@@ -433,6 +449,8 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    new = NGramModel(n=3)
+    start = time.clock()
+    new = NGramModel(n=1)
     path_corpus_train = sys.argv[1]
     new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train))
+    print("L'execution a duré %.4f" % (time.clock() - start))
