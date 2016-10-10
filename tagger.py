@@ -16,36 +16,39 @@ class NGramModel:
         self.__list_voc_obs = []
 
         # these attributes are the parameters of the HMM model
-        # each index i of the list consist of the i+1 -gram frequencies/probabilities
-        self.__state_transition_frequencies = []
-        self.__state_transition_probabilities = []
+        # each index i of the dicts consist of the i-gram frequencies/probabilities
+        self.__state_transition_frequencies = {}
+        self.__state_transition_probabilities = {}
 
+        # Has the opposite, the matrix of emission frequencies/probabilities are directly stored in these attributes.
         self.__observation_emission_frequencies = {}
         self.__observation_emission_probabilities = {}
 
-    def build_state_frequency_matrix(self, init_value=0):
-        for state in self.__list_voc_states:
-            self.__state_frequencies[state] = init_value
-
     def build_state_transition_frequency_matrix(self, depth, init_value=0):
         if depth < 1:
+            # This should never happen
             exit("NGramModel.build_state_transition_frequency_matrix has been called with depth = 0. It should be > 0.")
 
         if depth == 1:
+            # Exiting condition
             dict_state_transition_frequency_matrix = {}
+            # each leef of the tree is initialized with the init_value
             for state in self.__list_voc_states:
                 dict_state_transition_frequency_matrix[state] = init_value
 
         else:
+            # calculate lower-hierarchy branches
             dict_state_transition_frequency_matrix = self.build_state_transition_frequency_matrix(depth=depth-1, init_value=init_value)
             terminus = dict_state_transition_frequency_matrix
             dict_state_transition_frequency_matrix = {}
+            # plug lower-hierarchy branches to the current level
             for state in self.__list_voc_states:
                 dict_state_transition_frequency_matrix[state] = copy.deepcopy(terminus)
 
         return dict_state_transition_frequency_matrix
 
     def build_observation_emission_frequency_matrix(self, init_value=0):
+        # The observation emission matrix is always of dimension 2
         for observation in self.__list_voc_obs:
             self.__observation_emission_frequencies[observation] = {}
             for state in self.__list_voc_states:
@@ -55,45 +58,78 @@ class NGramModel:
         sequence_index = 0
         length_sequence = len(sequence)
 
+        # For each element of the corpus
         while sequence_index < length_sequence:
+            # get the observable and the state at the current index
             (obs, state) = sequence[sequence_index]
 
+            # boolean which say "are we currently processing a sub-sequence?"
+            new_sequence = False
+
+            # each subsequence will be processed separatly
             sub_sequence_states = []
+            # each sub-sequence starts with N-1 (N being the N of N-gram) "junk states"
+            for i in range(self.__N - 1):
+                sub_sequence_states.append(-1)
+
             while obs != 0:
-                (obs, state) = sequence[sequence_index]
+                new_sequence = True
                 self.__observation_emission_frequencies[obs][state] += 1
-                self.__state_frequencies[state] += 1
                 sub_sequence_states.append(state)
                 sequence_index += 1
-            self.count_state_transition_frequencies(sub_sequence_states)
+                (obs, state) = sequence[sequence_index]
+            # each sub-sequence ends with 1 "end of sub-sequence state"
+            sub_sequence_states.append(-2)
 
-            self.__observation_emission_frequencies[0][0] += 1
-            self.__state_frequencies[0] += 1
+            # if we were actually processing a real subsequence and not an artifact produced by two consecutive
+            # sequence separator in the corpus
+            if new_sequence:
+                # count every state transition in the subsequence (1-gram transition are also considered here)
+                self.count_state_transition_frequencies(sub_sequence_states)
+                # Counts the number of sub-sequence separations
+                self.__observation_emission_frequencies[0][0] += 1
 
             sequence_index += 1
 
-    def count_observation_emission_frequencies(self, tuple_sequence):
-        for (obs, state) in tuple_sequence:
-            self.__observation_emission_frequencies[obs][state] += 1
-
     def count_state_transition_frequencies(self, sequence):
         def increment_n_gram_frequency(state_transition_frequency, n_gram):
+            # this function doesn't return anything because it works on the object level
+            # any cleaner implementation is appreciated here
             if len(n_gram) == 1:
+                # increment the state frequency counter given all the previous sates encountered
                 state_transition_frequency[n_gram[0]] += 1
             else:
+                # if the n_gram size is > 1, we are not at the lowest level of the tree. We have to keep "remembering"
+                # the encountered states till we reach the last state of the N-gram
                 increment_n_gram_frequency(state_transition_frequency[n_gram[-1]], n_gram[:-1])
 
-        n_gram_indexes = range(self.__N)
-        length_sequence = len(sequence)
+        for n in range(self.__N):
+            # we store the index in the sequence of the currently processed n_gram
+            n_gram_indexes = range(n+1)
+            length_sequence = len(sequence)
 
-        while n_gram_indexes[-1] < length_sequence:
-            n_gram_states = [sequence[n] for n in n_gram_indexes]
-            increment_n_gram_frequency(self.__state_transition_frequencies, n_gram_states)
-            n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
+            # we stop processing till the last state of the n_gram has not reach the "end of sequence" state
+            while n_gram_indexes[-1] < length_sequence:
+                n_gram_states = [sequence[n] for n in n_gram_indexes]
+                increment_n_gram_frequency(self.__state_transition_frequencies[n+1], n_gram_states)
+                n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
 
-    def count_state_frequencies(self, sequence):
-        for state in sequence:
-            self.__state_frequencies[state] += 1
+    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth, smoothing=None):
+        if depth == 1:
+            tmp_dict = {}
+            for state in self.__list_voc_states:
+                if smoothing == 'Laplace':
+                    tmp_dict[state] = state_transition_frequencies[state] / (self.__state_frequencies[state] + len(self.__list_voc_states))
+                else:
+                    tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
+            return tmp_dict
+
+        elif depth > 1:
+            tmp_dict = {}
+            for state1 in self.__list_voc_states:
+                tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(state_transition_frequencies[state1], depth=depth-1)
+            return tmp_dict
+
 
     def ngram_training(self, corpus):
 
@@ -101,38 +137,23 @@ class NGramModel:
             self.set_voc_obs(list(set(corpus[:, 0])))
 
         if len(self.__list_voc_states) == 0:
-            self.set_voc_states(list(set(corpus[:, 1])))
+            self.set_voc_states(list(set(corpus[:, 1])) + [-1] + [-2])
 
         if self.__smoothing == "Laplace":
             # Laplace smoothing consists on adding a weight to each N-gram probability.
             # todo: at the moment, this weight is 1, it might be interesting to parametrize this
-            # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
-            for i in range(self.__N):
-                self.__state_transition_frequencies.append(
-                    self.build_state_transition_frequency_matrix(
-                        depth=i+1,
-                        init_value=1))
-            self.build_observation_emission_frequency_matrix(init_value=1)
+            init_value = 1
         else:
-            self.build_state_transition_frequency_matrix(depth=self.__N)
-            self.build_state_frequency_matrix()
-            self.build_observation_emission_frequency_matrix()
+            init_value = 0
+
+        # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
+        for i in range(self.__N):
+            self.__state_transition_frequencies[i+1] = self.build_state_transition_frequency_matrix(
+                depth=i+1,
+                init_value=init_value)
+        self.build_observation_emission_frequency_matrix(init_value=init_value)
 
         self.counter(corpus)
-        # counting state frequencies and transition frequencies could have been done at once but I wanted to keep
-        # the code clear
-        # self.count_state_frequencies(corpus[:, 1])
-        self.count_observation_emission_frequencies(corpus)
-
-        sequence_index = 0
-        length_sequence = len(sequence)
-        while sequence_index < length_sequence:
-            sub_sequence = []
-            while sequence[sequence_index][0] != 0:
-                sub_sequence.append(sequence[sequence_index])
-                sequence_index += 1
-                self.count_state_transition_frequencies(corpus[:, 1])
-            sequence_index += 1
 
         self.__state_transition_probabilities = \
             self.compute_state_transition_probabilities_matrix(self.__state_transition_frequencies, N)
@@ -195,21 +216,6 @@ class NGramModel:
     def predict(self):
         pass
 
-    def compute_state_transition_probabilities_matrix(self, state_transition_frequencies, depth, smoothing=None):
-        if depth == 1:
-            tmp_dict = {}
-            for state in self.__list_voc_states:
-                if smoothing == 'Laplace':
-                    tmp_dict[state] = state_transition_frequencies[state] / (self.__state_frequencies[state] + len(self.__list_voc_states))
-                else:
-                    tmp_dict[state] = state_transition_frequencies[state] / self.__state_frequencies[state]
-            return tmp_dict
-
-        elif depth > 1:
-            tmp_dict = {}
-            for state1 in self.__list_voc_states:
-                tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(state_transition_frequencies[state1], depth=depth-1)
-            return tmp_dict
 
     def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
@@ -289,10 +295,6 @@ def open_vocabulary(s_filename):
             dict_encode_decode[k] = stripped_line
             k += 1
     return dict_decode_encode, dict_encode_decode
-
-
-
-
 
 def build_two_elm_combinatorial(token_list1, token_list2, init_value=0):
     combinatorial = {}
