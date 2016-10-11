@@ -115,6 +115,10 @@ class NGramModel:
                 n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
 
     def compute_state_transition_probabilities_matrix(self, n_gram_frequencies, n_minus_1_gram_frequencies, depth, first=False, smoothing=None):
+        # remember the matrix of n-gram frequencies is formated like "frequency to get one state (level of hierarchy 1)
+        # given the first before (level 2) ... given the n-1th before (level n-1)".
+        # so when the depth is equals 1, it means that we have reached the last level of hierarchy (n-1) and the
+        # returned value is an int instead of dict in n_minus_1_gram_frequencies[state] and n_gram_frequencies[state]
         if depth == 1:
             tmp_dict = {}
             if n_minus_1_gram_frequencies == {}:
@@ -124,12 +128,25 @@ class NGramModel:
                 try:
                     tmp_dict[state] = -log10(n_gram_frequencies[state] / n_minus_1_gram_frequencies[state])
                 except:
+                    # todo this will change when smoothing probabilities
                     tmp_dict[state] = 1111111
             return tmp_dict
 
+        # if the depth is >= 2, then the returned value by n_gram_frequencies[state] is an other dict (a branch) which
+        # we have to walk in order to get the frequencies (leefs)
         elif depth >= 2:
             tmp_dict = {}
             for state1 in self.__list_voc_states:
+                # the first call of this recursive function (in the 'train' method) has an alternate behavior:
+                # in order to stick to the definition of the n-gram probabilities, we want to get the frequency of the
+                # n-1-gram at time t-1: look at this example:
+                #
+                # we are looking for the probability of the 3-gram "abc". p("abc") = freq("abc") / freq("ab")
+                # -> at first call, we start walking through the 3-gram_frequency_matrix by entering in level "a"
+                #    but we don't start walking through the 2-gram_frequency matrix
+                # -> at second call, we start walking through both trees to get:
+                #    - "c" given "b" given "a" frequency of the 3-gram
+                #    - "b" given "a" frequency of the 2-gram at time t-1
                 if first:
                     tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(n_gram_frequencies[state1],
                                                                                           n_minus_1_gram_frequencies,
@@ -158,14 +175,20 @@ class NGramModel:
             init_value = 0
 
         # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
+        # for each n, build the frequency matrix associated with the n-grams
         for i in range(self.__N):
             self.__state_transition_frequencies[i+1] = self.build_state_transition_frequency_matrix(
                 depth=i+1)
         self.build_observation_emission_frequency_matrix()
 
+        # actual count of transition and emission frequencies
         self.counter(corpus)
 
+        # for each n, fill the frequency matrix associated with the n-grams
         for i in range(self.__N):
+            # the probability to observe an n-gram at position t is the frequency of this n-gram divided by the
+            # frequency of the n-1 gram at state t-1... more presitions in the
+            # compute_state_transition_probabilities_matrix method
             n_gram_frequencies = self.__state_transition_frequencies[i+1]
             if i > 0:
                 n_minus_1_gram_frequencies = self.__state_transition_frequencies[i]
