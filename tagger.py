@@ -87,7 +87,8 @@ class NGramModel:
                 # count every state transition in the subsequence (1-gram transition are also considered here)
                 self.count_state_transition_frequencies(sub_sequence_states)
                 # Counts the number of sub-sequence separations
-                self.__observation_emission_frequencies[0][0] += 1
+                # todo regarder ça
+                # self.__observation_emission_frequencies[0][0] += 1
 
             sequence_index += 1
 
@@ -126,7 +127,7 @@ class NGramModel:
                     n_minus_1_gram_frequencies[state] = len(self.__list_voc_states)
             for state in self.__list_voc_states:
                 try:
-                    tmp_dict[state] = -log10(n_gram_frequencies[state] / n_minus_1_gram_frequencies[state])
+                    tmp_dict[state] = -log10((n_gram_frequencies[state] + 1) / (n_minus_1_gram_frequencies[state] + len(self.__list_voc_states)))
                 except:
                     # todo this will change when smoothing probabilities
                     tmp_dict[state] = 1111111
@@ -160,7 +161,7 @@ class NGramModel:
     def ngram_training(self, corpus):
 
         if len(self.__list_voc_obs) == 0:
-            self.set_voc_obs(list(set(corpus[:, 0])))
+            self.set_voc_obs(list(set(corpus[:, 0])) + [-1] + [-2])
 
         if len(self.__list_voc_states) == 0:
             self.set_voc_states(list(set(corpus[:, 1])) + [-1] + [-2])
@@ -240,11 +241,15 @@ class NGramModel:
         sequence_obs = [-1] * (self.__N - 1) + sequence_obs + [-2]
         sequence_obs_size = len(sequence_obs)
 
-        score = [{}]
+        score = []
         backtrack = {}
 
-        for state in self.__list_voc_states:
-            score[0][state] = 0
+        for i in range(self.__N - 1):
+            score.append({})
+            backtrack[i] = {}
+            for state in self.__list_voc_states:
+                score[i][state] = 0
+                backtrack[i][state] = 0
 
         # for each observable in the sequence
         for i in range(self.__N - 1, sequence_obs_size):
@@ -254,29 +259,47 @@ class NGramModel:
             for y_current in self.__list_voc_states:
                 # the score is calculated in term of the label of the last position
                 best_labels, best_score = self.get_best_label_and_score_for_state(self.__state_transition_probabilities[self.__N][y_current],
-                                                                           self.__observation_emission_probabilities[i][y_current],
+                                                                           self.__observation_emission_probabilities[sequence_obs[i]][y_current],
                                                                            score[-2],
                                                                            depth=self.__N -1)
                 score[-1][y_current] = best_score
+                if i not in backtrack:
+                    backtrack[i] = {}
+                backtrack[i][y_current] = best_labels[0]
 
-        i = sequence_obs_size - 1
-        output = [None] * sequence_obs_size
+
+        i = len(score) - 1
+        output = [None] * (sequence_obs_size)
         best_last_score = min(score[i].values())
         y = None
         for label, score in score[i].items():
             if score == best_last_score:
                 y = label
-                output[i] = y
+                output[-1] = y
                 break
 
         while i > 0:
             output[i - 1] = backtrack[i][y]
             y = backtrack[i][y]
             i -= 1
-        return output
 
-    def predict(self):
-        pass
+        return output[self.__N-1:-1]
+
+    def test(self, corpus):
+        sequence_obs = corpus[:, 0]
+        sequence_tags = corpus[:, 1]
+
+        result = self.viterbi(sequence_obs)
+
+        length_result = len(result)
+        i = 0
+        error_count = 0
+        while i < length_result:
+            if result[i] != sequence_tags[i]:
+                error_count += 1
+            i += 1
+
+        print("%.2f %% d'erreurs" % (float(error_count) / float(length_result) * float(100)))
 
 
     def compute_emission_probabilities(self, smoothing=None):
@@ -285,7 +308,7 @@ class NGramModel:
             for state in self.__list_voc_states:
                 try:
                     self.__observation_emission_probabilities[observable][state] = \
-                        -log10(self.__observation_emission_frequencies[observable][state] / self.__state_transition_frequencies[1][state])
+                        -log10((self.__observation_emission_frequencies[observable][state] + 1) / (self.__state_transition_frequencies[1][state] + len(self.__list_voc_obs)))
                 except:
                     self.__observation_emission_probabilities[observable][state] = 111111
 
@@ -401,7 +424,7 @@ def viterbi(sequence_obs, labels, transition_matrix, emission_matrix, pi_probs):
             backtrack[i][y_current] = best_label
 
     i = sequence_obs_size - 1
-    output = [None] * sequence_obs_size
+    output = [None] * (sequence_obs_size)
     best_last_score = min(score[i].values())
     y = None
     for label, score in score[i].items():
@@ -492,8 +515,12 @@ def main():
 if __name__ == "__main__":
     # main()
     start = time.clock()
-    new = NGramModel(n=3)
+    new = NGramModel(n=2)
     path_corpus_train = sys.argv[1]
+    path_corpus_test = sys.argv[2]
+    path_voc_observable = sys.argv[3]
+    new.set_voc_obs(open_vocabulary(path_voc_observable)[1].keys())
     new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train))
-    new.viterbi([2, 3, 4, 5, 13])
+    new.test(open_encoded_corpus_obs_state(path_corpus_test))
+
     print("L'execution a duré %.4f" % (time.clock() - start))
