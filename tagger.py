@@ -3,17 +3,22 @@
 import sys
 import numpy as np
 from math import log10
+from math import inf
 import copy
 import time
+import pickle
 
 class NGramModel:
 
-    def __init__(self, n=2, smoothing="Laplace"):
+    def __init__(self, n=2, laplace=0):
         self.__N = n
-        self.__smoothing = smoothing
+        self.__laplace_value = laplace
 
         self.__list_voc_states = []
         self.__list_voc_obs = []
+
+        self.__start_obs_state = (-1, -1)
+        self.__end_obs_state = (-2, -2)
 
         # these attributes are the parameters of the HMM model
         # each index i of the dicts consist of the i-gram frequencies/probabilities
@@ -54,9 +59,11 @@ class NGramModel:
             for state in self.__list_voc_states:
                 self.__observation_emission_frequencies[observation][state] = 0
 
-    def counter(self, sequence):
+    def counter(self, sequence, sub_sequence_delimiter):
         sequence_index = 0
         length_sequence = len(sequence)
+
+        delimiting_obs = sub_sequence_delimiter[0]
 
         # For each element of the corpus
         while sequence_index < length_sequence:
@@ -70,25 +77,24 @@ class NGramModel:
             sub_sequence_states = []
             # each sub-sequence starts with N-1 (N being the N of N-gram) "junk states"
             for i in range(self.__N - 1):
-                sub_sequence_states.append(-1)
+                sub_sequence_states.append(self.__start_obs_state[1])
 
-            while obs != 0:
+            while obs != delimiting_obs:
                 new_sequence = True
                 self.__observation_emission_frequencies[obs][state] += 1
                 sub_sequence_states.append(state)
                 sequence_index += 1
                 (obs, state) = sequence[sequence_index]
             # each sub-sequence ends with 1 "end of sub-sequence state"
-            sub_sequence_states.append(-2)
+            sub_sequence_states.append(self.__end_obs_state[1])
 
             # if we were actually processing a real subsequence and not an artifact produced by two consecutive
             # sequence separator in the corpus
             if new_sequence:
                 # count every state transition in the subsequence (1-gram transition are also considered here)
                 self.count_state_transition_frequencies(sub_sequence_states)
-                # Counts the number of sub-sequence separations
-                # todo regarder ça
-                # self.__observation_emission_frequencies[0][0] += 1
+                self.__observation_emission_frequencies[self.__start_obs_state[0]][self.__start_obs_state[1]] += 1 * (self.__N - 1)
+                self.__observation_emission_frequencies[self.__end_obs_state[0]][self.__end_obs_state[1]] += 1
 
             sequence_index += 1
 
@@ -126,11 +132,8 @@ class NGramModel:
                 for state in self.__list_voc_states:
                     n_minus_1_gram_frequencies[state] = len(self.__list_voc_states)
             for state in self.__list_voc_states:
-                try:
-                    tmp_dict[state] = -log10((n_gram_frequencies[state] + 1) / (n_minus_1_gram_frequencies[state] + len(self.__list_voc_states)))
-                except:
-                    # todo this will change when smoothing probabilities
-                    tmp_dict[state] = 1111111
+                tmp_dict[state] = -log10((n_gram_frequencies[state] + self.__laplace_value) /
+                                         (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
             return tmp_dict
 
         # if the depth is >= 2, then the returned value by n_gram_frequencies[state] is an other dict (a branch) which
@@ -158,20 +161,13 @@ class NGramModel:
                                                                                           depth=depth-1)
             return tmp_dict
 
-    def ngram_training(self, corpus):
+    def ngram_training(self, corpus, list_voc_obs, list_voc_states, sub_sequence_delimiter=(0, 0)):
 
         if len(self.__list_voc_obs) == 0:
-            self.set_voc_obs(list(set(corpus[:, 0])) + [-1] + [-2])
+            self.__list_voc_obs = list(list_voc_obs) + [self.__start_obs_state[0]] + [self.__end_obs_state[0]]
 
         if len(self.__list_voc_states) == 0:
-            self.set_voc_states(list(set(corpus[:, 1])) + [-1] + [-2])
-
-        if self.__smoothing == "Laplace":
-            # Laplace smoothing consists on adding a weight to each N-gram probability.
-            # todo: at the moment, this weight is 1, it might be interesting to parametrize this
-            init_value = 1
-        else:
-            init_value = 0
+            self.__list_voc_states = list(list_voc_states) + [self.__start_obs_state[1]] + [self.__end_obs_state[1]]
 
         # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
         # for each n, build the frequency matrix associated with the n-grams
@@ -181,7 +177,7 @@ class NGramModel:
         self.build_observation_emission_frequency_matrix()
 
         # actual count of transition and emission frequencies
-        self.counter(corpus)
+        self.counter(corpus, sub_sequence_delimiter)
 
         # for each n, fill the frequency matrix associated with the n-grams
         for i in range(self.__N):
@@ -199,19 +195,12 @@ class NGramModel:
         self.compute_emission_probabilities()
         return
 
-    def get_transition_score(self, state_transition_probabilities, sequence):
-        if len(sequence) == 1:
-            return state_transition_probabilities[sequence[0]]
-        else:
-            return self.get_transition_score(state_transition_probabilities[sequence[-1]], sequence[:, -1])
-
-    def get_best_label_and_score_for_state(self, state_transition_probabilities, emission_probability, score_viterbi_last_obs,first_gram=None, depth=1):
+    def get_best_label_and_score_for_state(self, state_transition_probabilities, emission_probability, score_viterbi_last_obs, depth=1):
         if depth == 1:
             best_label = None
             best_score = None
             for state in state_transition_probabilities:
-                if first_gram is None:
-                    first_gram = state
+
                 tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs[state]
                 if best_score is None or tmp_score < best_score:
                     best_score = tmp_score
@@ -223,12 +212,9 @@ class NGramModel:
             best_score = None
             best_list_label = None
             for state in self.__list_voc_states:
-                if first_gram is None:
-                    first_gram = state
                 tmp_list_best_label, tmp_best_score = self.get_best_label_and_score_for_state(state_transition_probabilities[state],
                                                                                               emission_probability,
                                                                                               score_viterbi_last_obs,
-                                                                                              first_gram,
                                                                                               depth=depth-1)
                 if best_score is None or tmp_best_score < best_score:
                     best_score = tmp_best_score
@@ -236,87 +222,360 @@ class NGramModel:
 
             return (best_list_label, best_score)
 
-    def viterbi(self, sequence_obs):
+    def viterbir(self, sequence_obs):
+        def init_pi_matrix(voc_states, depth, start_state, visited_states):
+            if depth == 1:
+                tmp_dict = {}
+                only_start_in_visited_states = True
+                for s in visited_states:
+                    if s!= start_state:
+                        only_start_in_visited_states = False
+                        break
+                for u in voc_states:
+                    if only_start_in_visited_states and u == start_state:
+                        tmp_dict[u] = 0
+                    else:
+                        tmp_dict[u] = inf
+                return tmp_dict
+            if depth >= 2:
+                tmp_dict = {}
+                for v in voc_states:
+                    tmp_dict[v] = init_pi_matrix(voc_states, depth=depth-1, start_state=start_state, visited_states=tuple([v] + [s for s in visited_states]))
+                return tmp_dict
 
-        sequence_obs = [-1] * (self.__N - 1) + sequence_obs + [-2]
+        def get_score_viterbi(visited_states, score_viterbi):
+            if len(visited_states) == 2:
+                return score_viterbi[visited_states[1]]
+            else:
+                return get_score_viterbi(visited_states[:-1], score_viterbi[visited_states[-1]])
+
+        def compute_best_pi_value(state_transition_probabilities, emission_probability, score_viterbi_last_obs, pi, bp, visited_states, voc_state, depth):
+            if depth == 1:
+                best_labels = None
+                best_score = None
+                for state in state_transition_probabilities:
+                    score_viterbi_last_obs_for_visited_states = get_score_viterbi(visited_states + [state], score_viterbi_last_obs)
+                    tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs_for_visited_states
+                    if best_score is None or tmp_score < best_score:
+                        best_score = tmp_score
+                        best_labels = visited_states + [state]
+
+                fill_pi_backtrack(pi, bp, best_labels, best_score)
+
+            elif depth >= 2:
+                for state in self.__list_voc_states:
+                    compute_best_pi_value(
+                        state_transition_probabilities[state],
+                        emission_probability,
+                        score_viterbi_last_obs,
+                        pi,
+                        bp,
+                        visited_states + [state],
+                        voc_state,
+                        depth=depth - 1)
+
+        def fill_pi_backtrack(pi, bp, visited_states, best_score):
+            if len(visited_states) == 2:
+                pi[visited_states[0]] = best_score
+                bp[visited_states[0]] = visited_states[1]
+            else:
+                if visited_states[-2] not in pi:
+                    pi[visited_states[-2]] = {}
+                if visited_states[-2] not in bp:
+                    bp[visited_states[-2]] = {}
+                fill_pi_backtrack(pi[visited_states[-2]], bp[visited_states[-2]], visited_states[:-2] + [visited_states[-1]], best_score)
+
+        def init_output(pi, state_transition_probabilities, voc_states, depth):
+            if depth == 1:
+                best_v_score = None
+                best_v = None
+                for v in voc_states:
+                    v_score = pi[v] + state_transition_probabilities[v]
+                    if best_v_score is None or v_score < best_v_score:
+                        best_v_score = v_score
+                        best_v = v
+                return [(best_v_score, [best_v])]
+            else:
+                best_scores_labels = []
+                for u in voc_states:
+                    result = init_output(pi[u], state_transition_probabilities[u], voc_states, depth=depth-1)[0]
+                    best_scores_labels.extend([(result[0], result[1] + [u])])
+                the_best_score = None
+                the_best_labels = None
+                for score in best_scores_labels:
+                    if the_best_score is None or score[0] < the_best_score:
+                        the_best_score = score[0]
+                        the_best_labels = score[1]
+                return [(the_best_score, the_best_labels)]
+
+        def get_output_for_k(bp, k, depth):
+            if depth == 1:
+                return bp[k]
+            else:
+                return get_output_for_k(bp[k], k+1, depth=depth-1)
+
+        pi = []
+        pi.append(init_pi_matrix(self.__list_voc_states, self.__N - 1, start_state=self.__start_obs_state[1], visited_states=[]))
+
+        bp = []
+        bp.append({})
+
+        sequence_obs = list(sequence_obs) + [self.__end_obs_state[0]]
+
+        n = len(sequence_obs)
+        for k in range(1, n+1):
+            pi.append({})
+            bp.append({})
+            for u in self.__list_voc_states:
+                compute_best_pi_value(self.__state_transition_probabilities[self.__N][u],
+                                                            self.__observation_emission_probabilities[sequence_obs[k-1]][u],
+                                                            pi[k-1],
+                                                            pi[k],
+                                                            bp[k],
+                                                            [u],
+                                                            self.__list_voc_states,
+                                                            depth=self.__N-1)
+
+        output = [None] * n
+        best_score_labels = list(init_output(pi[n], self.__state_transition_probabilities[self.__N][self.__end_obs_state[1]], self.__list_voc_states, depth=self.__N -1)[0])
+        #probleme, inversion
+        k = n - 1
+        while len(best_score_labels[1]) > 0:
+            output[k] = best_score_labels[1][0]
+            best_score_labels[1] = best_score_labels[1][1:]
+            k -= 1
+        # return output[1:] + [0]
+
+        while k > 0:
+            output[k] = get_output_for_k(bp[k+(self.__N - 1)], k + 1, depth=self.__N - 1)
+            k -= 1
+
+        return output[1:]
+
+    def viterbi2(self, sequence_obs):
+        pi = []
+        pi.append({})
+
+        for u in self.__list_voc_states:
+            pi[0][u] = inf
+
+        pi[0][self.__start_obs_state[1]] = 0
+
+        bp = []
+        bp.append({})
+
+        n = len(sequence_obs)
+        for k in range(1, n + 1):
+            pi.append({})
+            bp.append({})
+            for u in self.__list_voc_states:
+
+                best_pi_value = None
+                best_third_gram = None
+                for v in self.__list_voc_states:
+                    pi_value = pi[k-1][v] + \
+                               self.__state_transition_probabilities[2][u][v] + \
+                               self.__observation_emission_probabilities[sequence_obs[k-1]][u]
+                    if best_pi_value is None or pi_value < best_pi_value:
+                        best_pi_value = pi_value
+                        best_third_gram = v
+                pi[k][u] = best_pi_value
+                bp[k][u] = best_third_gram
+
+        output = [None] * n
+
+        best_u = None
+        best_u_score = inf
+
+        for u in self.__list_voc_states:
+            u_score = pi[n][u] + \
+                      self.__state_transition_probabilities[2][self.__end_obs_state[1]][u]
+            if u_score < best_u_score:
+                best_u_score = u_score
+                best_u = u
+        output[n-1] = best_u
+
+
+        k = n-2
+        while k > 0:
+            output[k] = bp[k+1][output[k+1]]
+            k -= 1
+        return output[1:] + [0]
+
+    def viterbi3(self, sequence_obs):
+        pi = []
+        pi.append({})
+
+        for u in self.__list_voc_states:
+            pi[0][u] = {}
+            for v in self.__list_voc_states:
+                pi[0][u][v] = inf
+
+        for u in self.__list_voc_states:
+            pi[0][u][self.__start_obs_state[1]] = inf
+
+        pi[0][self.__start_obs_state[1]][self.__start_obs_state[1]] = 0
+
+        bp = []
+        bp.append({})
+
+        n = len(sequence_obs)
+        for k in range(1, n + 1):
+            pi.append({})
+            bp.append({})
+            for u in self.__list_voc_states:
+                for v in self.__list_voc_states:
+                    best_pi_value = None
+                    best_third_gram = None
+                    for w in self.__list_voc_states:
+                        pi_value = pi[k-1][w][v] + \
+                                   self.__state_transition_probabilities[3][u][v][w] + \
+                                   self.__observation_emission_probabilities[sequence_obs[k-1]][u]
+                        if best_pi_value is None or pi_value < best_pi_value:
+                            best_pi_value = pi_value
+                            best_third_gram = w
+                    if v not in pi[k]:
+                        pi[k][v] = {}
+                    pi[k][v][u] = best_pi_value
+                    if v not in bp[k]:
+                        bp[k][v] = {}
+                    bp[k][v][u] = best_third_gram
+
+        output = [None] * n
+
+        best_u = None
+        best_v = None
+        best_uv_score = inf
+        for u in self.__list_voc_states:
+            for v in self.__list_voc_states:
+                uv_score = pi[n][u][v] + \
+                           self.__state_transition_probabilities[3][self.__end_obs_state[1]][u][v]
+                if uv_score < best_uv_score:
+                    best_uv_score = uv_score
+                    best_u = u
+                    best_v = v
+        output[n-1] = best_u
+        output[n-2] = best_v
+
+        k = n-3
+        while k > 0:
+            output[k] = bp[k+2][output[k+1]][output[k+2]]
+            k -= 1
+        return output[1:] + [0]
+
+    def viterbi(self, sequence_obs, sub_sequence_delimiter=(0, 0)):
+
+        sequence_obs = list(sequence_obs)
+        # if sequence_obs[-1] != sub_sequence_delimiter[0]:
+        #     sequence_obs = sequence_obs + [sub_sequence_delimiter[0]]
+        # if sequence_obs[0] != sub_sequence_delimiter[0]:
+        sequence_obs = [sub_sequence_delimiter[0]] + sequence_obs
         sequence_obs_size = len(sequence_obs)
 
         score = []
-        backtrack = {}
+        backtrack = []
 
-        for i in range(self.__N - 1):
-            score.append({})
-            backtrack[i] = {}
-            for state in self.__list_voc_states:
-                score[i][state] = 0
-                backtrack[i][state] = 0
+        score.append({})
+        backtrack.append({})
 
+        for state in self.__list_voc_states:
+            score[0][state] = inf
+            backtrack[0][state] = self.__start_obs_state[1]
+        score[0][self.__start_obs_state[1]] = 0
+
+        index_sequence = 1
         # for each observable in the sequence
-        for i in range(self.__N - 1, sequence_obs_size):
-            # setup the score dict for this observable
-            score.append({})
-            # we'll calculate the score for each possible label
-            for y_current in self.__list_voc_states:
-                # the score is calculated in term of the label of the last position
-                best_labels, best_score = self.get_best_label_and_score_for_state(self.__state_transition_probabilities[self.__N][y_current],
-                                                                           self.__observation_emission_probabilities[sequence_obs[i]][y_current],
-                                                                           score[-2],
-                                                                           depth=self.__N -1)
-                score[-1][y_current] = best_score
-                if i not in backtrack:
-                    backtrack[i] = {}
-                backtrack[i][y_current] = best_labels[0]
+        while index_sequence < sequence_obs_size:
+            sub_sequence = [self.__start_obs_state[1]] * (self.__N - 1)
+            index_subsequence = self.__N - 1
+            while index_sequence < sequence_obs_size and sequence_obs[index_sequence] != sub_sequence_delimiter[0]:
+                sub_sequence.append(sequence_obs[index_sequence])
+                # setup the score dict for this observable
+                score.append({})
+                backtrack.append({})
+                # we'll calculate the score for each possible label
+                for y_current in self.__list_voc_states:
+                    # the score is calculated in term of the label of the last position
+                    best_labels, best_score = self.get_best_label_and_score_for_state(self.__state_transition_probabilities[self.__N][y_current],
+                                                                               self.__observation_emission_probabilities[sub_sequence[index_subsequence]][y_current],
+                                                                               score[-2],
+                                                                               depth=self.__N -1)
+                    score[index_sequence][y_current] = best_score
+                    backtrack[index_sequence][y_current] = best_labels[0]
+                index_sequence += 1
+                index_subsequence += 1
+
+            if index_sequence != sequence_obs_size:
+                score.append({})
+                backtrack.append({})
+                best_last_score = min(score[-2].values())
+                best_last_y = None
+                for last_label, last_score in score[-2].items():
+                    if last_score == best_last_score:
+                        best_last_y = last_label
+                        break
+
+                for state in self.__list_voc_states:
+                    score[index_sequence][state] = inf
+                    backtrack[index_sequence][state] = best_last_y
+                score[index_sequence][self.__start_obs_state[1]] = 0
+
+                index_sequence += 1
 
 
-        i = len(score) - 1
-        output = [None] * (sequence_obs_size)
-        best_last_score = min(score[i].values())
-        y = None
-        for label, score in score[i].items():
-            if score == best_last_score:
-                y = label
+        output = [0] * (sequence_obs_size)
+
+        best_last_score = min(score[-1].values())
+        for last_label, last_score in score[-1].items():
+            if last_score == best_last_score:
+                y = last_label
                 output[-1] = y
                 break
 
+        i = len(output) - 2
         while i > 0:
-            output[i - 1] = backtrack[i][y]
+            if backtrack[i][y] == self.__start_obs_state[1] or backtrack[i][y] == self.__end_obs_state[1]:
+                output[i] = sub_sequence_delimiter[1]
+            else:
+                output[i] = backtrack[i][y]
             y = backtrack[i][y]
             i -= 1
 
-        return output[self.__N-1:-1]
+        return output[2:] + [0]
 
     def test(self, corpus):
         sequence_obs = corpus[:, 0]
         sequence_tags = corpus[:, 1]
 
-        result = self.viterbi(sequence_obs)
+        # result = self.viterbi(sequence_obs)
+        # result = self.viterbi3(sequence_obs)
+        result2 = self.viterbi2(sequence_obs)
+        resultr = self.viterbir(sequence_obs)
 
-        length_result = len(result)
+
+        print("sequence", len(sequence_tags), " ".join([str(x) for x in sequence_tags[:10]]), "...", " ".join([str(x) for x in sequence_tags[-10:]]))
+        print("2-resulat", len(result2), " ".join([str(x) for x in result2[:10]]), "...", " ".join([str(x) for x in result2[-10:]]))
+        # print("3-resulat", len(result), " ".join([str(x) for x in result[:10]]), "...", " ".join([str(x) for x in result[-10:]]))
+        print("r-resulat", len(resultr), " ".join([str(x) for x in resultr[:10]]), "...", " ".join([str(x) for x in resultr[-10:]]))
+
+        length_result = len(resultr)
         i = 0
         error_count = 0
         while i < length_result:
-            if result[i] != sequence_tags[i]:
+            if resultr[i] != sequence_tags[i]:
                 error_count += 1
             i += 1
 
         print("%.2f %% d'erreurs" % (float(error_count) / float(length_result) * float(100)))
 
-
     def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
             self.__observation_emission_probabilities[observable] = {}
             for state in self.__list_voc_states:
-                try:
-                    self.__observation_emission_probabilities[observable][state] = \
-                        -log10((self.__observation_emission_frequencies[observable][state] + 1) / (self.__state_transition_frequencies[1][state] + len(self.__list_voc_obs)))
-                except:
-                    self.__observation_emission_probabilities[observable][state] = 111111
 
-    def set_voc_states(self, list_voc_states):
-        self.__list_voc_states = list_voc_states
-
-    def set_voc_obs(self, list_voc_obs):
-        self.__list_voc_obs = list_voc_obs
+                self.__observation_emission_probabilities[observable][state] = \
+                    -log10((self.__observation_emission_frequencies[observable][state] + self.__laplace_value) /
+                           (self.__state_transition_frequencies[1][state] + (len(self.__list_voc_obs) * self.__laplace_value)))
 
 def open_encoded_corpus_obs_state(s_filename):
     """
@@ -334,7 +593,7 @@ def open_encoded_corpus_obs_state(s_filename):
         f = open(s_filename, 'r')
     except FileNotFoundError:
         exit("The specified corpus: " + str(s_filename) + "does not exist.")
-    list_tuples_obs_state = [tuple((0, 0))]
+    list_tuples_obs_state = []
     s_line = f.readline()
     while s_line != "":
         s_stripped_line = s_line.strip()
@@ -348,8 +607,6 @@ def open_encoded_corpus_obs_state(s_filename):
                 tuple_obs_state = tuple((0, 0))
                 list_tuples_obs_state.append(tuple_obs_state)
         s_line = f.readline()
-    if list_tuples_obs_state[-1] != tuple((0, 0)):
-        list_tuples_obs_state.append(tuple((0, 0)))
     return np.array(list_tuples_obs_state)
 
 def open_vocabulary(s_filename):
@@ -439,88 +696,35 @@ def viterbi(sequence_obs, labels, transition_matrix, emission_matrix, pi_probs):
         i -= 1
     return output
 
-def test(corpus, dict_encode_state, transition_probabilities, emission_probabilities, pi_probabilities):
-    sequence_obs = corpus[:, 0]
-    sequence_tags = corpus[:, 1]
-
-    result = viterbi(sequence_obs,
-        dict_encode_state.keys(),
-        transition_probabilities,
-        emission_probabilities,
-        pi_probabilities)
-
-    length_result = len(result)
-    i = 0
-    error_count = 0
-    while i < length_result:
-        if result[i] != sequence_tags[i]:
-            error_count += 1
-        i += 1
-
-    print("%.2f %% d'erreurs" % (float(error_count)/float(length_result)*float(100)))
-
 def main():
-    path_corpus_train = sys.argv[1]
-    # path_corpus_test = sys.argv[4]
-    # path_voc_observable = sys.argv[2]
-    # path_voc_states = sys.argv[3]
+    pass
 
-    # dict_decode_obs, dict_encode_obs = open_vocabulary(path_voc_observable)
-    # dict_decode_state, dict_encode_state = open_vocabulary(path_voc_states)
+def save_object(obj, filename):
+    with open(filename, 'wb') as output:
+        pickle.dump(obj, output, pickle.HIGHEST_PROTOCOL)
 
-    # lissage de laplace + 1 au compte du bigramme / + V au compte de l'unigramme
-
-
-    # state_occurence_init = {}
-    # length_voc_state_plus_length_voc_lex = len(dict_encode_obs)
-    # for token in dict_encode_state.keys():
-    #     state_occurence_init[token] = length_voc_state_plus_length_voc_lex
-    #
-    # emission_occurence_matrix_init = build_two_elm_combinatorial(dict_encode_obs.keys(),
-    #                                                              dict_encode_state.keys(),
-    #                                                              init_value=1)
-
-    # emission_probabilities = emission_prob(open_encoded_corpus_obs_state(path_corpus_train),
-    #                                        state_occurence_init,
-    #                                        emission_occurence_matrix_init)
-    #
-    # state_occurence_init = {}
-    # length_voc_state = len(dict_encode_state)
-    # for token in dict_encode_state.keys():
-    #     state_occurence_init[token] = length_voc_state
-    #
-    # pi_probabilities = pi_prob(open_encoded_corpus_obs_state(path_corpus_train)[:, 1],
-    #                            dict_decode_state["PONCT"],
-    #                            state_occurence_init)
-    #
-    # print("\n".join([dict_encode_state[i] for i in viterbi([dict_decode_obs[i] for i in['Une',
-    #                                                                                     'regrettable',
-    #                                                                                     'erreur',
-    #                                                                                     'nous',
-    #                                                                                     'a',
-    #                                                                                     'fait',
-    #                                                                                     'écrire']],
-    #                dict_encode_state.keys(),
-    #                transition_probabilities,
-    #                emission_probabilities,
-    #                pi_probabilities)]))
-
-    # test(open_encoded_corpus_obs_state(path_corpus_test),
-    #      dict_encode_state,
-    #      transition_probabilities,
-    #      emission_probabilities,
-    #      pi_probabilities)
-
-
+def load_object(filename):
+    with open(filename, 'rb') as input:
+        return pickle.load(input)
 if __name__ == "__main__":
     # main()
     start = time.clock()
-    new = NGramModel(n=2)
-    path_corpus_train = sys.argv[1]
-    path_corpus_test = sys.argv[2]
-    path_voc_observable = sys.argv[3]
-    new.set_voc_obs(open_vocabulary(path_voc_observable)[1].keys())
-    new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train))
-    new.test(open_encoded_corpus_obs_state(path_corpus_test))
+    n = 2
 
-    print("L'execution a duré %.4f" % (time.clock() - start))
+    try:
+        new = load_object('dump.save' + str(n))
+    except FileNotFoundError:
+        new = NGramModel(n=n, laplace=1)
+        path_corpus_train = sys.argv[1]
+        path_voc_obs = sys.argv[2]
+        path_voc_state = sys.argv[3]
+        dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+        dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+
+        new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(), dict_state_encode_decode.keys())
+        save_object(new, 'dump.save' + str(n))
+
+    path_corpus_test = sys.argv[4]
+    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:15])
+
+    print("L'execution a duré %.4fs" % (time.clock() - start))
