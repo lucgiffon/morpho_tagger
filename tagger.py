@@ -194,33 +194,33 @@ class NGramModel:
 
         self.compute_emission_probabilities()
         return
-
-    def get_best_label_and_score_for_state(self, state_transition_probabilities, emission_probability, score_viterbi_last_obs, depth=1):
-        if depth == 1:
-            best_label = None
-            best_score = None
-            for state in state_transition_probabilities:
-
-                tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs[state]
-                if best_score is None or tmp_score < best_score:
-                    best_score = tmp_score
-                    best_label = state
-
-            return ([best_label], best_score)
-
-        elif depth >= 2:
-            best_score = None
-            best_list_label = None
-            for state in self.__list_voc_states:
-                tmp_list_best_label, tmp_best_score = self.get_best_label_and_score_for_state(state_transition_probabilities[state],
-                                                                                              emission_probability,
-                                                                                              score_viterbi_last_obs,
-                                                                                              depth=depth-1)
-                if best_score is None or tmp_best_score < best_score:
-                    best_score = tmp_best_score
-                    best_list_label = [state] + tmp_list_best_label
-
-            return (best_list_label, best_score)
+    #
+    # def get_best_label_and_score_for_state(self, state_transition_probabilities, emission_probability, score_viterbi_last_obs, depth=1):
+    #     if depth == 1:
+    #         best_label = None
+    #         best_score = None
+    #         for state in state_transition_probabilities:
+    #
+    #             tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs[state]
+    #             if best_score is None or tmp_score < best_score:
+    #                 best_score = tmp_score
+    #                 best_label = state
+    #
+    #         return ([best_label], best_score)
+    #
+    #     elif depth >= 2:
+    #         best_score = None
+    #         best_list_label = None
+    #         for state in self.__list_voc_states:
+    #             tmp_list_best_label, tmp_best_score = self.get_best_label_and_score_for_state(state_transition_probabilities[state],
+    #                                                                                           emission_probability,
+    #                                                                                           score_viterbi_last_obs,
+    #                                                                                           depth=depth-1)
+    #             if best_score is None or tmp_best_score < best_score:
+    #                 best_score = tmp_best_score
+    #                 best_list_label = [state] + tmp_list_best_label
+    #
+    #         return (best_list_label, best_score)
 
     def viterbir(self, sequence_obs):
         def init_pi_matrix(voc_states, depth, start_state, visited_states):
@@ -253,24 +253,24 @@ class NGramModel:
             if depth == 1:
                 best_labels = None
                 best_score = None
-                for state in state_transition_probabilities:
-                    score_viterbi_last_obs_for_visited_states = get_score_viterbi(visited_states + [state], score_viterbi_last_obs)
-                    tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs_for_visited_states
+                for w in voc_state:
+                    score_viterbi_last_obs_for_visited_states = get_score_viterbi(visited_states + [w], score_viterbi_last_obs)
+                    tmp_score = state_transition_probabilities[w] + emission_probability + score_viterbi_last_obs_for_visited_states
                     if best_score is None or tmp_score < best_score:
                         best_score = tmp_score
-                        best_labels = visited_states + [state]
+                        best_labels = visited_states + [w]
 
                 fill_pi_backtrack(pi, bp, best_labels, best_score)
 
             elif depth >= 2:
-                for state in self.__list_voc_states:
+                for v in voc_state:
                     compute_best_pi_value(
-                        state_transition_probabilities[state],
+                        state_transition_probabilities[v],
                         emission_probability,
                         score_viterbi_last_obs,
                         pi,
                         bp,
-                        visited_states + [state],
+                        visited_states + [v],
                         voc_state,
                         depth=depth - 1)
 
@@ -308,11 +308,11 @@ class NGramModel:
                         the_best_labels = score[1]
                 return [(the_best_score, the_best_labels)]
 
-        def get_output_for_k(bp, k, depth):
+        def get_output_for_k(bp, k, output, depth):
             if depth == 1:
-                return bp[k]
+                return bp[output[k]]
             else:
-                return get_output_for_k(bp[k], k+1, depth=depth-1)
+                return get_output_for_k(bp[output[k+1]], k, output, depth=depth-1)
 
         pi = []
         pi.append(init_pi_matrix(self.__list_voc_states, self.__N - 1, start_state=self.__start_obs_state[1], visited_states=[]))
@@ -320,15 +320,17 @@ class NGramModel:
         bp = []
         bp.append({})
 
-        sequence_obs = list(sequence_obs) + [self.__end_obs_state[0]]
-
+        sequence_obs = list(sequence_obs)
         n = len(sequence_obs)
-        for k in range(1, n+1):
+
+        formated_sequence_obs = [self.__start_obs_state[0]] + sequence_obs + [self.__start_obs_state[0]]
+        n_formated = len(formated_sequence_obs)
+        for k in range(1, n_formated - 1):
             pi.append({})
             bp.append({})
             for u in self.__list_voc_states:
                 compute_best_pi_value(self.__state_transition_probabilities[self.__N][u],
-                                                            self.__observation_emission_probabilities[sequence_obs[k-1]][u],
+                                                            self.__observation_emission_probabilities[formated_sequence_obs[k]][u],
                                                             pi[k-1],
                                                             pi[k],
                                                             bp[k],
@@ -338,19 +340,17 @@ class NGramModel:
 
         output = [None] * n
         best_score_labels = list(init_output(pi[n], self.__state_transition_probabilities[self.__N][self.__end_obs_state[1]], self.__list_voc_states, depth=self.__N -1)[0])
-        #probleme, inversion
-        k = n - 1
+        k = n
         while len(best_score_labels[1]) > 0:
-            output[k] = best_score_labels[1][0]
+            output[k-1] = best_score_labels[1][0]
             best_score_labels[1] = best_score_labels[1][1:]
             k -= 1
-        # return output[1:] + [0]
 
         while k > 0:
-            output[k] = get_output_for_k(bp[k+(self.__N - 1)], k + 1, depth=self.__N - 1)
+            output[k - 1] = get_output_for_k(bp[k+1], k, output, depth=self.__N - 1)
             k -= 1
 
-        return output[1:]
+        return output
 
     def viterbi2(self, sequence_obs):
         pi = []
@@ -364,18 +364,21 @@ class NGramModel:
         bp = []
         bp.append({})
 
+        sequence_obs = list(sequence_obs)
         n = len(sequence_obs)
-        for k in range(1, n + 1):
+
+        formated_sequence_obs = [self.__start_obs_state[0]] + sequence_obs + [self.__start_obs_state[0]]
+        n_formated = len(formated_sequence_obs)
+        for k in range(1, n_formated - 1):
             pi.append({})
             bp.append({})
             for u in self.__list_voc_states:
-
                 best_pi_value = None
                 best_third_gram = None
                 for v in self.__list_voc_states:
                     pi_value = pi[k-1][v] + \
                                self.__state_transition_probabilities[2][u][v] + \
-                               self.__observation_emission_probabilities[sequence_obs[k-1]][u]
+                               self.__observation_emission_probabilities[formated_sequence_obs[k]][u]
                     if best_pi_value is None or pi_value < best_pi_value:
                         best_pi_value = pi_value
                         best_third_gram = v
@@ -386,7 +389,6 @@ class NGramModel:
 
         best_u = None
         best_u_score = inf
-
         for u in self.__list_voc_states:
             u_score = pi[n][u] + \
                       self.__state_transition_probabilities[2][self.__end_obs_state[1]][u]
@@ -395,12 +397,11 @@ class NGramModel:
                 best_u = u
         output[n-1] = best_u
 
-
-        k = n-2
+        k = n-1
         while k > 0:
-            output[k] = bp[k+1][output[k+1]]
+            output[k-1] = bp[k+1][output[k]]
             k -= 1
-        return output[1:] + [0]
+        return output
 
     def viterbi3(self, sequence_obs):
         pi = []
@@ -420,7 +421,10 @@ class NGramModel:
         bp.append({})
 
         n = len(sequence_obs)
-        for k in range(1, n + 1):
+
+        formated_sequence_obs = [self.__start_obs_state[0]] + sequence_obs + [self.__start_obs_state[0]]
+        n_formated = len(formated_sequence_obs)
+        for k in range(1, n_formated - 1):
             pi.append({})
             bp.append({})
             for u in self.__list_voc_states:
@@ -430,7 +434,7 @@ class NGramModel:
                     for w in self.__list_voc_states:
                         pi_value = pi[k-1][w][v] + \
                                    self.__state_transition_probabilities[3][u][v][w] + \
-                                   self.__observation_emission_probabilities[sequence_obs[k-1]][u]
+                                   self.__observation_emission_probabilities[formated_sequence_obs[k]][u]
                         if best_pi_value is None or pi_value < best_pi_value:
                             best_pi_value = pi_value
                             best_third_gram = w
@@ -457,112 +461,51 @@ class NGramModel:
         output[n-1] = best_u
         output[n-2] = best_v
 
-        k = n-3
+        k = n-2
         while k > 0:
-            output[k] = bp[k+2][output[k+1]][output[k+2]]
+            output[k-1] = bp[k+2][output[k]][output[k+1]]
             k -= 1
-        return output[1:] + [0]
+        return output
 
-    def viterbi(self, sequence_obs, sub_sequence_delimiter=(0, 0)):
-
+    def process_observable_sequence(self, sequence_obs, computing_function, sub_sequence_delimiter=(0, 0)):
         sequence_obs = list(sequence_obs)
-        # if sequence_obs[-1] != sub_sequence_delimiter[0]:
-        #     sequence_obs = sequence_obs + [sub_sequence_delimiter[0]]
-        # if sequence_obs[0] != sub_sequence_delimiter[0]:
-        sequence_obs = [sub_sequence_delimiter[0]] + sequence_obs
-        sequence_obs_size = len(sequence_obs)
 
-        score = []
-        backtrack = []
+        output = []
+        i = 0
+        while i < len(sequence_obs):
+            sub_sequence = []
+            while i < len(sequence_obs) and sequence_obs[i] != sub_sequence_delimiter[0]:
+                sub_sequence.append(sequence_obs[i])
+                i += 1
+            if bool(sub_sequence):
+                output.extend(computing_function(sub_sequence))
 
-        score.append({})
-        backtrack.append({})
+            if i < len(sequence_obs) and sequence_obs[i] == sub_sequence_delimiter[0]:
+                output.append(sub_sequence_delimiter[1])
+            i += 1
 
-        for state in self.__list_voc_states:
-            score[0][state] = inf
-            backtrack[0][state] = self.__start_obs_state[1]
-        score[0][self.__start_obs_state[1]] = 0
-
-        index_sequence = 1
-        # for each observable in the sequence
-        while index_sequence < sequence_obs_size:
-            sub_sequence = [self.__start_obs_state[1]] * (self.__N - 1)
-            index_subsequence = self.__N - 1
-            while index_sequence < sequence_obs_size and sequence_obs[index_sequence] != sub_sequence_delimiter[0]:
-                sub_sequence.append(sequence_obs[index_sequence])
-                # setup the score dict for this observable
-                score.append({})
-                backtrack.append({})
-                # we'll calculate the score for each possible label
-                for y_current in self.__list_voc_states:
-                    # the score is calculated in term of the label of the last position
-                    best_labels, best_score = self.get_best_label_and_score_for_state(self.__state_transition_probabilities[self.__N][y_current],
-                                                                               self.__observation_emission_probabilities[sub_sequence[index_subsequence]][y_current],
-                                                                               score[-2],
-                                                                               depth=self.__N -1)
-                    score[index_sequence][y_current] = best_score
-                    backtrack[index_sequence][y_current] = best_labels[0]
-                index_sequence += 1
-                index_subsequence += 1
-
-            if index_sequence != sequence_obs_size:
-                score.append({})
-                backtrack.append({})
-                best_last_score = min(score[-2].values())
-                best_last_y = None
-                for last_label, last_score in score[-2].items():
-                    if last_score == best_last_score:
-                        best_last_y = last_label
-                        break
-
-                for state in self.__list_voc_states:
-                    score[index_sequence][state] = inf
-                    backtrack[index_sequence][state] = best_last_y
-                score[index_sequence][self.__start_obs_state[1]] = 0
-
-                index_sequence += 1
-
-
-        output = [0] * (sequence_obs_size)
-
-        best_last_score = min(score[-1].values())
-        for last_label, last_score in score[-1].items():
-            if last_score == best_last_score:
-                y = last_label
-                output[-1] = y
-                break
-
-        i = len(output) - 2
-        while i > 0:
-            if backtrack[i][y] == self.__start_obs_state[1] or backtrack[i][y] == self.__end_obs_state[1]:
-                output[i] = sub_sequence_delimiter[1]
-            else:
-                output[i] = backtrack[i][y]
-            y = backtrack[i][y]
-            i -= 1
-
-        return output[2:] + [0]
+        return output
 
     def test(self, corpus):
         sequence_obs = corpus[:, 0]
         sequence_tags = corpus[:, 1]
 
-        # result = self.viterbi(sequence_obs)
-        # result = self.viterbi3(sequence_obs)
-        result2 = self.viterbi2(sequence_obs)
-        resultr = self.viterbir(sequence_obs)
+        result = self.process_observable_sequence(sequence_obs, self.viterbir)
+        result3 = self.process_observable_sequence(sequence_obs, self.viterbi3)
+        result2 = self.process_observable_sequence(sequence_obs, self.viterbi2)
+
+        print(" ".join([str(x) for x in sequence_tags]))
+        print(" ".join([str(x) for x in result]))
+        print(" ".join([str(x) for x in result3]))
+        print(" ".join([str(x) for x in result2]))
 
 
-        print("sequence", len(sequence_tags), " ".join([str(x) for x in sequence_tags[:10]]), "...", " ".join([str(x) for x in sequence_tags[-10:]]))
-        print("2-resulat", len(result2), " ".join([str(x) for x in result2[:10]]), "...", " ".join([str(x) for x in result2[-10:]]))
-        # print("3-resulat", len(result), " ".join([str(x) for x in result[:10]]), "...", " ".join([str(x) for x in result[-10:]]))
-        print("r-resulat", len(resultr), " ".join([str(x) for x in resultr[:10]]), "...", " ".join([str(x) for x in resultr[-10:]]))
-
-        length_result = len(resultr)
+        length_result = len(result)
         i = 0
         error_count = 0
         while i < length_result:
-            if resultr[i] != sequence_tags[i]:
+            # print(result[i], sequence_tags[i])
+            if result[i] != sequence_tags[i]:
                 error_count += 1
             i += 1
 
@@ -635,67 +578,6 @@ def open_vocabulary(s_filename):
             k += 1
     return dict_decode_encode, dict_encode_decode
 
-def build_two_elm_combinatorial(token_list1, token_list2, init_value=0):
-    combinatorial = {}
-    for token1 in token_list1:
-        combinatorial[token1] = {}
-        for token2 in token_list2:
-            combinatorial[token1][token2] = init_value
-    return combinatorial
-
-def viterbi(sequence_obs, labels, transition_matrix, emission_matrix, pi_probs):
-
-    backtrack = {}
-    sequence_obs_size = len(sequence_obs)
-    score = [{}]
-
-    # initialization
-    for y in labels:
-        score[0][y] = pi_probs[y] + emission_matrix[sequence_obs[0]][y]
-
-    # for each observable in the sequence
-    for i in range(1, sequence_obs_size):
-        # setup the score dict for this observable
-        score.append({})
-        # we'll calculate the score for each possible label
-        for y_current in labels:
-            best_label_score = None
-            best_label = None
-            # the score is calculated in term of the label of the last position
-            for y_last in labels:
-                # for each label at position i-1, we calculate the score at position i
-                score_y_last = score[i-1][y_last]
-                score_transition = transition_matrix[y_current][y_last]
-                score_emission = emission_matrix[sequence_obs[i]][y_current]
-                y_last_score = score_y_last + score_transition + score_emission
-                # we are in log probs so we have to min the score
-                if best_label_score is None or y_last_score < best_label_score:
-                    best_label = y_last
-                    best_label_score = y_last_score
-
-            # store the best score for each position of the observable sequence and each possible label
-            score[i][y_current] = best_label_score
-            # store the label of the position i-1 which gave the best score for position i
-            if i not in backtrack:
-                backtrack[i] = {}
-            backtrack[i][y_current] = best_label
-
-    i = sequence_obs_size - 1
-    output = [None] * (sequence_obs_size)
-    best_last_score = min(score[i].values())
-    y = None
-    for label, score in score[i].items():
-        if score == best_last_score:
-            y = label
-            output[i] = y
-            break
-
-    while i > 0:
-        output[i-1] = backtrack[i][y]
-        y = backtrack[i][y]
-        i -= 1
-    return output
-
 def main():
     pass
 
@@ -706,10 +588,11 @@ def save_object(obj, filename):
 def load_object(filename):
     with open(filename, 'rb') as input:
         return pickle.load(input)
+
 if __name__ == "__main__":
     # main()
     start = time.clock()
-    n = 2
+    n = 3
 
     try:
         new = load_object('dump.save' + str(n))
@@ -725,6 +608,6 @@ if __name__ == "__main__":
         save_object(new, 'dump.save' + str(n))
 
     path_corpus_test = sys.argv[4]
-    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:15])
+    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:100])
 
     print("L'execution a duré %.4fs" % (time.clock() - start))
