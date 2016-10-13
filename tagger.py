@@ -299,7 +299,7 @@ class NGramModel:
                 best_scores_labels = []
                 for u in voc_states:
                     result = init_output(pi[u], state_transition_probabilities[u], voc_states, depth=depth-1)[0]
-                    best_scores_labels.extend([(result[0], result[1] + [u])])
+                    best_scores_labels.extend([(result[0], [u] + result[1])])
                 the_best_score = None
                 the_best_labels = None
                 for score in best_scores_labels:
@@ -312,7 +312,7 @@ class NGramModel:
             if depth == 1:
                 return bp[output[k]]
             else:
-                return get_output_for_k(bp[output[k+1]], k, output, depth=depth-1)
+                return get_output_for_k(bp[output[k]], k+1, output, depth=depth-1)
 
         pi = []
         pi.append(init_pi_matrix(self.__list_voc_states, self.__N - 1, start_state=self.__start_obs_state[1], visited_states=[]))
@@ -347,7 +347,7 @@ class NGramModel:
             k -= 1
 
         while k > 0:
-            output[k - 1] = get_output_for_k(bp[k+1], k, output, depth=self.__N - 1)
+            output[k - 1] = get_output_for_k(bp[k+(self.__N-1)], k, output, depth=self.__N - 1)
             k -= 1
 
         return output
@@ -491,20 +491,11 @@ class NGramModel:
         sequence_tags = corpus[:, 1]
 
         result = self.process_observable_sequence(sequence_obs, self.viterbir)
-        result3 = self.process_observable_sequence(sequence_obs, self.viterbi3)
-        result2 = self.process_observable_sequence(sequence_obs, self.viterbi2)
-
-        print(" ".join([str(x) for x in sequence_tags]))
-        print(" ".join([str(x) for x in result]))
-        print(" ".join([str(x) for x in result3]))
-        print(" ".join([str(x) for x in result2]))
-
 
         length_result = len(result)
         i = 0
         error_count = 0
         while i < length_result:
-            # print(result[i], sequence_tags[i])
             if result[i] != sequence_tags[i]:
                 error_count += 1
             i += 1
@@ -592,7 +583,7 @@ def load_object(filename):
 if __name__ == "__main__":
     # main()
     start = time.clock()
-    n = 3
+    n = 2
 
     try:
         new = load_object('dump.save' + str(n))
@@ -608,6 +599,6 @@ if __name__ == "__main__":
         save_object(new, 'dump.save' + str(n))
 
     path_corpus_test = sys.argv[4]
-    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:100])
+    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:])
 
     print("L'execution a duré %.4fs" % (time.clock() - start))
