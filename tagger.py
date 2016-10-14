@@ -10,10 +10,13 @@ import pickle
 
 class NGramModel:
 
-    def __init__(self, n=2, laplace=0.0, interpolation=1.0):
+    def __init__(self, n=2, laplace=1.0, interpolation=(1.0, 0.0)):
         self.__N = n
         self.__laplace_value = laplace
-        self.__interpolation_value = interpolation
+        if len(interpolation) != n or int(sum(interpolation)) != 1:
+            raise ValueError("Interpolation values should be exactly of size %s for %s-gram models and they should"
+                             " sum to 1." % (n, n))
+        self.__interpolation_values = interpolation
 
         self.__list_voc_states = []
         self.__list_voc_obs = []
@@ -141,15 +144,15 @@ class NGramModel:
             for state in self.__list_voc_states:
                 if len(visited_states) != 0:
                     n_minus_1_gram_transition_probability = self.get_transition_probability(self.__state_transition_probabilities[len(visited_states)], visited_states)
-
+                    p_n_minus_1_gram = 10 ** (-n_minus_1_gram_transition_probability)
                     p_n_gram = ((n_gram_frequencies[state] + self.__laplace_value) /
                              (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
-                    p_n_minus_1_gram = 10**n_minus_1_gram_transition_probability
-                    tmp_dict[state] = -log10(self.__interpolation_value * p_n_gram +
-                                             (1 - self.__interpolation_value) * p_n_minus_1_gram)
+
+                    tmp_dict[state] = -log10(self.__interpolation_values[self.__N - (len(visited_states) + 1)] * p_n_gram + p_n_minus_1_gram)
                 else:
-                    tmp_dict[state] = -log10((n_gram_frequencies[state] + self.__laplace_value) /
+                    p_n_gram = ((n_gram_frequencies[state] + self.__laplace_value) /
                              (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
+                    tmp_dict[state] = -log10(self.__interpolation_values[self.__N - (len(visited_states) + 1)] * p_n_gram)
             return tmp_dict
 
         # if the depth is >= 2, then the returned value by n_gram_frequencies[state] is an other dict (a branch) which
@@ -553,13 +556,9 @@ class NGramModel:
 
         output = []
         i = 0
-        start = time.clock()
         while i < len(sequence_obs):
-
             sub_sequence = []
             while i < len(sequence_obs) and sequence_obs[i] != sub_sequence_delimiter[0]:
-                if i % 10000 == 0:
-                    print("%s ième mot: %.2fs" % (i, (time.clock() - start)))
                 sub_sequence.append(sequence_obs[i])
                 i += 1
             if bool(sub_sequence):
@@ -577,7 +576,6 @@ class NGramModel:
 
         result = self.process_observable_sequence(sequence_obs, self.viterbir)
 
-        print("Calcul du résultat terminé.")
         length_result = len(result)
         i = 0
         error_count = 0
@@ -586,7 +584,8 @@ class NGramModel:
                 error_count += 1
             i += 1
 
-        print("%.2f %% d'erreurs pour n=%s" % ((float(error_count) / float(length_result) * float(100)), self.__N))
+        return (float(error_count) / float(length_result) * float(100))
+
 
     def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
@@ -675,17 +674,20 @@ if __name__ == "__main__":
     dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
     dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
 
-    start = time.clock()
-    n=2
-    print("Démarage pour n=%s." % n)
 
+
+    # x_alpha = 0.05
+    # alphas = [x_alpha * i for i in range(1, 21)]
+    # x_ip = 0.1
+    # ips = [x_ip * i for i in range(1, 11)]
+    # models = []
+    n = 2
     a = 1
-    new = NGramModel(n=n, laplace=1, interpolation=0.7)
+    i = (0.9999999, 0.0000001)
+    start = time.clock()
+    new = NGramModel(n=n, laplace=a, interpolation=i)
     new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
                        dict_state_encode_decode.keys())
-    print("Modèle entrainé pour alpha = %s." % a)
+    err = new.test(open_encoded_corpus_obs_state(path_corpus_test))
+    print("%.5f%% d'erreur, %s-grammes, alpha = %s, interpolation value = %s, %.2fs" % (err, n, a, i, time.clock() - start))
 
-    print("")
-
-    new.test(open_encoded_corpus_obs_state(path_corpus_test))
-    print("L'execution pour alpha = %s a duré %.4fs." % (a, (time.clock() - start)))
