@@ -1,5 +1,7 @@
 data/*
 .idea
+dump.save*
+results.txt
 
 # Python gitignore
 
