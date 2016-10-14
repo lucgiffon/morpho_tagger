@@ -10,9 +10,10 @@ import pickle
 
 class NGramModel:
 
-    def __init__(self, n=2, laplace=0):
+    def __init__(self, n=2, laplace=0.0, interpolation=1.0):
         self.__N = n
         self.__laplace_value = laplace
+        self.__interpolation_value = interpolation
 
         self.__list_voc_states = []
         self.__list_voc_obs = []
@@ -121,7 +122,13 @@ class NGramModel:
                 increment_n_gram_frequency(self.__state_transition_frequencies[n+1], n_gram_states)
                 n_gram_indexes = list(map(lambda x: x+1, n_gram_indexes))
 
-    def compute_state_transition_probabilities_matrix(self, n_gram_frequencies, n_minus_1_gram_frequencies, depth, first=False, smoothing=None):
+    def get_transition_probability(self, transition_probabilities, n_gram):
+        if len(n_gram) == 1:
+            return transition_probabilities[n_gram[0]]
+        else:
+            return self.get_transition_probability(transition_probabilities[n_gram[0]], n_gram[1:])
+
+    def compute_state_transition_probabilities_matrix(self, n_gram_frequencies, n_minus_1_gram_frequencies, depth, visited_states, first=False):
         # remember the matrix of n-gram frequencies is formated like "frequency to get one state (level of hierarchy 1)
         # given the first before (level 2) ... given the n-1th before (level n-1)".
         # so when the depth is equals 1, it means that we have reached the last level of hierarchy (n-1) and the
@@ -132,8 +139,17 @@ class NGramModel:
                 for state in self.__list_voc_states:
                     n_minus_1_gram_frequencies[state] = len(self.__list_voc_states)
             for state in self.__list_voc_states:
-                tmp_dict[state] = -log10((n_gram_frequencies[state] + self.__laplace_value) /
-                                         (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
+                if len(visited_states) != 0:
+                    n_minus_1_gram_transition_probability = self.get_transition_probability(self.__state_transition_probabilities[len(visited_states)], visited_states)
+
+                    p_n_gram = ((n_gram_frequencies[state] + self.__laplace_value) /
+                             (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
+                    p_n_minus_1_gram = 10**n_minus_1_gram_transition_probability
+                    tmp_dict[state] = -log10(self.__interpolation_value * p_n_gram +
+                                             (1 - self.__interpolation_value) * p_n_minus_1_gram)
+                else:
+                    tmp_dict[state] = -log10((n_gram_frequencies[state] + self.__laplace_value) /
+                             (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
             return tmp_dict
 
         # if the depth is >= 2, then the returned value by n_gram_frequencies[state] is an other dict (a branch) which
@@ -154,10 +170,12 @@ class NGramModel:
                 if first:
                     tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(n_gram_frequencies[state1],
                                                                                           n_minus_1_gram_frequencies,
+                                                                                          visited_states=visited_states + [state1],
                                                                                           depth=depth-1)
                 else:
                     tmp_dict[state1] = self.compute_state_transition_probabilities_matrix(n_gram_frequencies[state1],
                                                                                           n_minus_1_gram_frequencies[state1],
+                                                                                          visited_states=visited_states + [state1],
                                                                                           depth=depth-1)
             return tmp_dict
 
@@ -190,7 +208,7 @@ class NGramModel:
             else:
                 n_minus_1_gram_frequencies = {}
             self.__state_transition_probabilities[i+1] = \
-                self.compute_state_transition_probabilities_matrix(n_gram_frequencies, n_minus_1_gram_frequencies, depth=i+1, first=True)
+                self.compute_state_transition_probabilities_matrix(n_gram_frequencies, n_minus_1_gram_frequencies, depth=i+1, visited_states=[], first=True)
 
         self.compute_emission_probabilities()
         return
@@ -650,26 +668,24 @@ def load_object(filename):
 
 if __name__ == "__main__":
     # main()
+    path_corpus_train = sys.argv[1]
+    path_voc_obs = sys.argv[2]
+    path_voc_state = sys.argv[3]
+    path_corpus_test = sys.argv[4]
+    dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+    dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+
     start = time.clock()
     n=2
     print("Démarage pour n=%s." % n)
 
-    try:
-        new = load_object('dump.save' + str(n))
-        print("Modèle chargé.")
-    except FileNotFoundError:
-        new = NGramModel(n=n, laplace=1)
-        path_corpus_train = sys.argv[1]
-        path_voc_obs = sys.argv[2]
-        path_voc_state = sys.argv[3]
-        dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
-        dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+    a = 1
+    new = NGramModel(n=n, laplace=1, interpolation=0.7)
+    new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
+                       dict_state_encode_decode.keys())
+    print("Modèle entrainé pour alpha = %s." % a)
 
-        new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(), dict_state_encode_decode.keys())
-        print("Entrainement du modèle terminé.")
-        save_object(new, 'dump.save' + str(n))
+    print("")
 
-    path_corpus_test = sys.argv[4]
     new.test(open_encoded_corpus_obs_state(path_corpus_test))
-
-    print("L'execution pour n=%s a duré %.4fs." % (n, (time.clock() - start)))
+    print("L'execution pour alpha = %s a duré %.4fs." % (a, (time.clock() - start)))
