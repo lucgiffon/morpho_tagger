@@ -194,73 +194,117 @@ class NGramModel:
 
         self.compute_emission_probabilities()
         return
-    #
-    # def get_best_label_and_score_for_state(self, state_transition_probabilities, emission_probability, score_viterbi_last_obs, depth=1):
-    #     if depth == 1:
-    #         best_label = None
-    #         best_score = None
-    #         for state in state_transition_probabilities:
-    #
-    #             tmp_score = state_transition_probabilities[state] + emission_probability + score_viterbi_last_obs[state]
-    #             if best_score is None or tmp_score < best_score:
-    #                 best_score = tmp_score
-    #                 best_label = state
-    #
-    #         return ([best_label], best_score)
-    #
-    #     elif depth >= 2:
-    #         best_score = None
-    #         best_list_label = None
-    #         for state in self.__list_voc_states:
-    #             tmp_list_best_label, tmp_best_score = self.get_best_label_and_score_for_state(state_transition_probabilities[state],
-    #                                                                                           emission_probability,
-    #                                                                                           score_viterbi_last_obs,
-    #                                                                                           depth=depth-1)
-    #             if best_score is None or tmp_best_score < best_score:
-    #                 best_score = tmp_best_score
-    #                 best_list_label = [state] + tmp_list_best_label
-    #
-    #         return (best_list_label, best_score)
 
     def viterbir(self, sequence_obs):
         def init_pi_matrix(voc_states, depth, start_state, visited_states):
+            """
+            Initialize the score matrix for the position '0' of the sequence which will always be associated with
+            special 'start' state.
+
+            This is a recursive function: the matrix is of dimension N (N being the size of the N-grams)
+
+            :param voc_states: The list of possible state
+            :param depth: The depth of the pi matrix.
+            :param start_state: The code of the 'start state"
+            :param visited_states: The value of the matrix are set one by one. They all take 'inf' value but the value
+            of the N-gram 'start start start' at position 0.
+
+            :return: The initialized matrix.
+            """
             if depth == 1:
+                # at depth == 1, we set the score
                 tmp_dict = {}
                 only_start_in_visited_states = True
+
                 for s in visited_states:
                     if s!= start_state:
                         only_start_in_visited_states = False
                         break
                 for u in voc_states:
+                    # the only box with the best value is the one of the N-gram 'start start start' which means that all
+                    # visited states are 'start'
                     if only_start_in_visited_states and u == start_state:
                         tmp_dict[u] = 0
                     else:
                         tmp_dict[u] = inf
                 return tmp_dict
+
             if depth >= 2:
+                # if depth >= 2, we have to go deeper in the score matrix
                 tmp_dict = {}
                 for v in voc_states:
                     tmp_dict[v] = init_pi_matrix(voc_states, depth=depth-1, start_state=start_state, visited_states=tuple([v] + [s for s in visited_states]))
                 return tmp_dict
 
         def get_score_viterbi(visited_states, score_viterbi):
-            if len(visited_states) == 2:
-                return score_viterbi[visited_states[1]]
+            """
+            Get the score of a specific N-gram.
+
+            The position in the word should be already set when entering this function.
+
+            :param visited_states: The N-gram: last visited states should be at the end of the sequence.
+            :param score_viterbi: The viterbi scores of a given position.
+
+            :return: The score of the N-gram
+            """
+            if len(visited_states) == 1:
+                return score_viterbi[visited_states[0]]
             else:
                 return get_score_viterbi(visited_states[:-1], score_viterbi[visited_states[-1]])
 
-        def compute_best_pi_value(state_transition_probabilities, emission_probability, score_viterbi_last_obs, pi, bp, visited_states, voc_state, depth):
+        def fill_pi_backtrack(pi, bp, visited_states, best_score, best_label):
+            """
+            Set the score to observe the N-gram of visited_states at the current observation.
+
+            :param pi: The scoring matrix at the current observation.
+            :param bp: The backpointer matrix at the current observation.
+            :param visited_states: The N-gram
+            :param best_score: The best obtained score for this N-gram
+            :param best_label: The best_label which has given this best score.
+            """
+            if len(visited_states) == 1:
+                pi[visited_states[0]] = best_score
+                bp[visited_states[0]] = best_label
+            else:
+                if visited_states[-1] not in pi:
+                    pi[visited_states[-1]] = {}
+                if visited_states[-1] not in bp:
+                    bp[visited_states[-1]] = {}
+                fill_pi_backtrack(pi[visited_states[-1]], bp[visited_states[-1]], visited_states[:-1], best_score, best_label)
+
+        def compute_best_pi_value(state_transition_probabilities, emission_probability, score_viterbi_last_obs,
+                                  pi, bp, visited_states,
+                                  voc_state, depth):
+            """
+            Compute best pi value for a given state and position of the sequence.
+
+            This function is not atomic since it computes the best pi-value then store it it in the scoring matrix
+            and the backpointer matrix. (better implementations appreciated here)
+
+            :param state_transition_probabilities: The transition probability, given the visited states.
+            :param emission_probability:
+            :param score_viterbi_last_obs: The score in the pi_matrix for the last observable.
+            :param pi: The score matrix at the current observation. Will be filled by "fill_pi_backtrack' function.
+            :param bp: The backpointer matrix at the current observation. Will be filled by "fill_pi_backtrack' function
+            :param visited_states: The states of the N-gram.
+            :param voc_state:
+            :param depth:
+            """
             if depth == 1:
-                best_labels = None
+                best_label = None
                 best_score = None
                 for w in voc_state:
-                    score_viterbi_last_obs_for_visited_states = get_score_viterbi(visited_states + [w], score_viterbi_last_obs)
-                    tmp_score = state_transition_probabilities[w] + emission_probability + score_viterbi_last_obs_for_visited_states
+                    score_viterbi_last_obs_for_visited_states = get_score_viterbi(list(visited_states + [w])[1:],
+                                                                                  score_viterbi_last_obs)
+                    tmp_score = state_transition_probabilities[w] + \
+                        emission_probability + \
+                        score_viterbi_last_obs_for_visited_states
+
                     if best_score is None or tmp_score < best_score:
                         best_score = tmp_score
-                        best_labels = visited_states + [w]
+                        best_label = w
 
-                fill_pi_backtrack(pi, bp, best_labels, best_score)
+                fill_pi_backtrack(pi, bp, visited_states, best_score, best_label)
 
             elif depth >= 2:
                 for v in voc_state:
@@ -274,18 +318,18 @@ class NGramModel:
                         voc_state,
                         depth=depth - 1)
 
-        def fill_pi_backtrack(pi, bp, visited_states, best_score):
-            if len(visited_states) == 2:
-                pi[visited_states[0]] = best_score
-                bp[visited_states[0]] = visited_states[1]
-            else:
-                if visited_states[-2] not in pi:
-                    pi[visited_states[-2]] = {}
-                if visited_states[-2] not in bp:
-                    bp[visited_states[-2]] = {}
-                fill_pi_backtrack(pi[visited_states[-2]], bp[visited_states[-2]], visited_states[:-2] + [visited_states[-1]], best_score)
 
         def init_output(pi, state_transition_probabilities, voc_states, depth):
+            """
+            Get the states used to initialize output.
+
+            :param pi: The scores at a given position. Usually, the last position of the sequence is used.
+            :param state_transition_probabilities: The state transition probability. Usually initialized with the first
+            state is the 'end state' special state.
+            :param voc_states: The list of possible states.
+            :param depth:
+            :return: tuple(best_score, [best_labels])
+            """
             if depth == 1:
                 best_v_score = None
                 best_v = None
@@ -294,11 +338,11 @@ class NGramModel:
                     if best_v_score is None or v_score < best_v_score:
                         best_v_score = v_score
                         best_v = v
-                return [(best_v_score, [best_v])]
+                return (best_v_score, [best_v])
             else:
                 best_scores_labels = []
                 for u in voc_states:
-                    result = init_output(pi[u], state_transition_probabilities[u], voc_states, depth=depth-1)[0]
+                    result = init_output(pi[u], state_transition_probabilities[u], voc_states, depth=depth-1)
                     best_scores_labels.extend([(result[0], [u] + result[1])])
                 the_best_score = None
                 the_best_labels = None
@@ -306,44 +350,63 @@ class NGramModel:
                     if the_best_score is None or score[0] < the_best_score:
                         the_best_score = score[0]
                         the_best_labels = score[1]
-                return [(the_best_score, the_best_labels)]
+                return (the_best_score, the_best_labels)
 
         def get_output_for_k(bp, k, output, depth):
+            """
+            Return the (k-1)th output.
+            """
             if depth == 1:
                 return bp[output[k]]
             else:
                 return get_output_for_k(bp[output[k]], k+1, output, depth=depth-1)
 
+        # pi is the matrix that will store the score for each position of the sequence and each state
         pi = []
         pi.append(init_pi_matrix(self.__list_voc_states, self.__N - 1, start_state=self.__start_obs_state[1], visited_states=[]))
 
+        # bp is the backpointer which will be used to get back the states from the calculated scores
         bp = []
         bp.append({})
 
+        # the actual observable sequence to compute
         sequence_obs = list(sequence_obs)
         n = len(sequence_obs)
 
+        # a reformated version of the observable sequence in order to make it consistent with the score matrix indexes.
         formated_sequence_obs = [self.__start_obs_state[0]] + sequence_obs + [self.__start_obs_state[0]]
         n_formated = len(formated_sequence_obs)
+        # the k only browse the actual obs_sequence
         for k in range(1, n_formated - 1):
             pi.append({})
             bp.append({})
+            # u is the state associated with the obs
             for u in self.__list_voc_states:
+                # compute the score for this u in terms of:
+                # - The state transition probabilities leading to this u
+                # - The observation emission probability for this u to generate this observable
+                # - The scores obtained at the last position of the word (k-1)
+                # - pi[k] and bp[k] are the scores and backpointers values to set
+                # - [u] will be used for the setting of pi[k] and bp[k]
+                # - again, the list of possible states and the depth are some 'utilitaries' for the recursive function
                 compute_best_pi_value(self.__state_transition_probabilities[self.__N][u],
-                                                            self.__observation_emission_probabilities[formated_sequence_obs[k]][u],
-                                                            pi[k-1],
-                                                            pi[k],
-                                                            bp[k],
-                                                            [u],
-                                                            self.__list_voc_states,
-                                                            depth=self.__N-1)
+                                      self.__observation_emission_probabilities[formated_sequence_obs[k]][u],
+                                      pi[k-1],
+                                      pi[k],
+                                      bp[k],
+                                      [u],
+                                      self.__list_voc_states,
+                                      depth=self.__N-1)
 
         output = [None] * n
-        best_score_labels = list(init_output(pi[n], self.__state_transition_probabilities[self.__N][self.__end_obs_state[1]], self.__list_voc_states, depth=self.__N -1)[0])
+        best_score_labels = list(init_output(pi[n],
+                                             self.__state_transition_probabilities[self.__N][self.__end_obs_state[1]],
+                                             self.__list_voc_states, depth=self.__N -1)[1])
+        # first, set the last N-1 output
         k = n
-        while len(best_score_labels[1]) > 0:
-            output[k-1] = best_score_labels[1][0]
-            best_score_labels[1] = best_score_labels[1][1:]
+        while k > 0 and len(best_score_labels) > 0:
+            output[k-1] = best_score_labels[0]
+            best_score_labels = best_score_labels[1:]
             k -= 1
 
         while k > 0:
@@ -472,9 +535,13 @@ class NGramModel:
 
         output = []
         i = 0
+        start = time.clock()
         while i < len(sequence_obs):
+
             sub_sequence = []
             while i < len(sequence_obs) and sequence_obs[i] != sub_sequence_delimiter[0]:
+                if i % 10000 == 0:
+                    print("%s ième mot: %.2fs" % (i, (time.clock() - start)))
                 sub_sequence.append(sequence_obs[i])
                 i += 1
             if bool(sub_sequence):
@@ -492,6 +559,7 @@ class NGramModel:
 
         result = self.process_observable_sequence(sequence_obs, self.viterbir)
 
+        print("Calcul du résultat terminé.")
         length_result = len(result)
         i = 0
         error_count = 0
@@ -500,7 +568,7 @@ class NGramModel:
                 error_count += 1
             i += 1
 
-        print("%.2f %% d'erreurs" % (float(error_count) / float(length_result) * float(100)))
+        print("%.2f %% d'erreurs pour n=%s" % ((float(error_count) / float(length_result) * float(100)), self.__N))
 
     def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
@@ -583,10 +651,12 @@ def load_object(filename):
 if __name__ == "__main__":
     # main()
     start = time.clock()
-    n = 2
+    n=2
+    print("Démarage pour n=%s." % n)
 
     try:
         new = load_object('dump.save' + str(n))
+        print("Modèle chargé.")
     except FileNotFoundError:
         new = NGramModel(n=n, laplace=1)
         path_corpus_train = sys.argv[1]
@@ -596,9 +666,10 @@ if __name__ == "__main__":
         dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
 
         new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(), dict_state_encode_decode.keys())
+        print("Entrainement du modèle terminé.")
         save_object(new, 'dump.save' + str(n))
 
     path_corpus_test = sys.argv[4]
-    new.test(open_encoded_corpus_obs_state(path_corpus_test)[:])
+    new.test(open_encoded_corpus_obs_state(path_corpus_test))
 
-    print("L'execution a duré %.4fs" % (time.clock() - start))
+    print("L'execution pour n=%s a duré %.4fs." % (n, (time.clock() - start)))
