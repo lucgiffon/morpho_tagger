@@ -1,18 +1,52 @@
 #!/usr/bin/env python
+"""
+Tagger is a Part-Of-Speech (POS) tagger. It can build a model from a training corpus and then use it in order to
+determine the sequence of POS that might have generated a sentence.
+
+Usage:
+  tagger.py train CORPUS MODEL-FILE --obs=VOC --state=VOC [--n=INT] [--alpha=FLOAT] [--interpolation=TUPLE]
+  tagger.py test CORPUS MODEL-FILE
+  tagger.py predict SEQUENCE MODEL-FILE [--encode-obs=VOC] [--decode-state=VOC]
+  tagger.py dev [ARBITRARY]...
+  tagger.py -h | --help
+
+Arguments:
+  CORPUS            Path to corpus file
+  VOC               Path to vocabulary file
+  MODEL-FILE        Path to the model file
+  SEQUENCE          Sentence that should be surrounded by quotation marks (' or "). Every punctuation character should
+                    be spaced to the surrounding word with spaces ' ' characters. Ex: "Je m'appelle Jordy." -> "Je m ' appelle Jordy . "
+  INT               Integer value
+  FLOAT             Floating point value
+  TUPLE             Tuple of floating point values
+  ARBITRARY         Arbitrary argument used for dev mode.
+
+Options:
+  -h --help               Show this screen.
+  --obs=VOC               Path to vocabulary of observables
+  --state=VOC             Path to vocabulary of states
+  --n=INT                 Integer specifying the size of the n-gram [default: 2]
+  --alpha=FLOAT           Float value used for 'add-alpha' smoothing [default: 1.0]
+  --interpolation=TUPLE   Tuple of floats which have to be provided without spaces [default: (1.0,0.0)]
+  --encode-obs=VOC        Path to vocabulary of observables. To use if you use a sequence of decoded observables.
+  --decode-state=VOC      Path to vocabulary of states. To use if you want a sequence of decoded states.
+"""
 
 import sys
+import random
 import numpy as np
 from math import log10
 from math import inf
 import copy
 import time
 import pickle
+from docopt import docopt
 
 class NGramModel:
 
-    def __init__(self, n=2, laplace=1.0, interpolation=(1.0, 0.0)):
+    def __init__(self, n=2, alpha=0.0, interpolation=(1.0, 0.0)):
         self.__N = n
-        self.__laplace_value = laplace
+        self.__alpha_value = alpha
         if len(interpolation) != n or int(sum(interpolation)) != 1:
             raise ValueError("Interpolation values should be exactly of size %s for %s-gram models and they should"
                              " sum to 1." % (n, n))
@@ -142,17 +176,20 @@ class NGramModel:
                 for state in self.__list_voc_states:
                     n_minus_1_gram_frequencies[state] = len(self.__list_voc_states)
             for state in self.__list_voc_states:
-                if len(visited_states) != 0:
-                    n_minus_1_gram_transition_probability = self.get_transition_probability(self.__state_transition_probabilities[len(visited_states)], visited_states)
-                    p_n_minus_1_gram = 10 ** (-n_minus_1_gram_transition_probability)
-                    p_n_gram = ((n_gram_frequencies[state] + self.__laplace_value) /
-                             (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
-
-                    tmp_dict[state] = -log10(self.__interpolation_values[self.__N - (len(visited_states) + 1)] * p_n_gram + p_n_minus_1_gram)
+                if len(visited_states) == 0 or self.__interpolation_values[self.__N - len(visited_states)] == 0:
+                    p_n_minus_1_gram = 0
                 else:
-                    p_n_gram = ((n_gram_frequencies[state] + self.__laplace_value) /
-                             (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__laplace_value)))
-                    tmp_dict[state] = -log10(self.__interpolation_values[self.__N - (len(visited_states) + 1)] * p_n_gram)
+                    n_minus_1_gram_transition_probability = self.get_transition_probability(
+                        self.__state_transition_probabilities[len(visited_states)], visited_states)
+                    p_n_minus_1_gram = 10 ** (-n_minus_1_gram_transition_probability)
+
+                p_n_gram = ((n_gram_frequencies[state] + self.__alpha_value) /
+                            (n_minus_1_gram_frequencies[state] + (len(self.__list_voc_states) * self.__alpha_value)))
+                if self.__interpolation_values[0] == 1:
+                    tmp_dict[state] = -log10(p_n_gram)
+                else:
+                    tmp_dict[state] = -log10(
+                        self.__interpolation_values[self.__N - (len(visited_states) + 1)] * p_n_gram + p_n_minus_1_gram)
             return tmp_dict
 
         # if the depth is >= 2, then the returned value by n_gram_frequencies[state] is an other dict (a branch) which
@@ -182,13 +219,16 @@ class NGramModel:
                                                                                           depth=depth-1)
             return tmp_dict
 
-    def ngram_training(self, corpus, list_voc_obs, list_voc_states, sub_sequence_delimiter=(0, 0)):
+    def gen_training(self, corpus, list_voc_obs, list_voc_states, sub_sequence_delimiter=(0, 0)):
 
         if len(self.__list_voc_obs) == 0:
             self.__list_voc_obs = list(list_voc_obs) + [self.__start_obs_state[0]] + [self.__end_obs_state[0]]
 
         if len(self.__list_voc_states) == 0:
             self.__list_voc_states = list(list_voc_states) + [self.__start_obs_state[1]] + [self.__end_obs_state[1]]
+
+        if tuple(corpus[-1]) != (0, 0):
+            corpus = np.append(corpus, [[0, 0]], axis=0)
 
         # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
         # for each n, build the frequency matrix associated with the n-grams
@@ -215,6 +255,62 @@ class NGramModel:
 
         self.compute_emission_probabilities()
         return
+
+    def disc_training(self, corpus, list_voc_obs, list_voc_states, nbr_iteration, sub_sequence_delimiter=(0, 0)):
+
+        if len(self.__list_voc_obs) == 0:
+            self.__list_voc_obs = list(list_voc_obs) + [self.__start_obs_state[0]] + [self.__end_obs_state[0]]
+
+        if len(self.__list_voc_states) == 0:
+            self.__list_voc_states = list(list_voc_states) + [self.__start_obs_state[1]] + [self.__end_obs_state[1]]
+
+        if tuple(corpus[-1]) != (0, 0):
+            corpus = np.append(corpus, [[0, 0]], axis=0)
+
+        # setup the frequencies matrix before processing the corpus in order to prevent any "key-missing" error
+        # for each n, build the frequency matrix associated with the n-grams
+        for i in range(self.__N):
+            self.__state_transition_frequencies[i+1] = self.build_state_transition_frequency_matrix(
+                depth=i+1)
+            self.__state_transition_probabilities[i+1] = copy.deepcopy(self.__state_transition_frequencies[i+1])
+        self.build_observation_emission_frequency_matrix()
+        self.__observation_emission_probabilities = copy.deepcopy(self.__observation_emission_frequencies)
+
+        sub_sequences = []
+        i_seq = 0
+        while i_seq < len(corpus):
+            sub_sequence_obs = []
+            sub_sequence_states = []
+            while i_seq < len(corpus) and corpus[i_seq][0] != sub_sequence_delimiter[0]:
+                sub_sequence_obs.append(corpus[i_seq][0])
+                sub_sequence_states.append(corpus[i_seq][1])
+                i_seq += 1
+            sub_sequences.append([sub_sequence_obs, sub_sequence_states])
+            i_seq += 1
+        i_iter = 0
+        while i_iter < nbr_iteration:
+            shuffled_sub_sequences = copy.deepcopy(sub_sequences)
+            random.shuffle(shuffled_sub_sequences)
+            for sub_s in shuffled_sub_sequences:
+                observables = [self.__start_obs_state[0]] + sub_s[0]
+                expected = [self.__start_obs_state[1]] + sub_s[1]
+                result = [self.__start_obs_state[1]] + self.viterbir(sub_s[0])
+                i_sub_s = 0
+                while i_sub_s < len(result) - 1:
+                    i_state_result = result[i_sub_s]
+                    j_state_result = result[i_sub_s + 1]
+                    i_state_expected = expected[i_sub_s]
+                    j_state_expected = expected[i_sub_s + 1]
+                    obs = observables[i_sub_s]
+                    if i_state_expected != i_state_result or j_state_expected != j_state_result:
+                        self.__state_transition_probabilities[self.__N][j_state_result][i_state_result] += 1 # on cherche à minimiser le score
+                        self.__state_transition_probabilities[self.__N][j_state_expected][i_state_expected] -= 1
+                        if i_state_expected != i_state_result:
+                            self.__observation_emission_probabilities[obs][i_state_expected] -= 1
+                            self.__observation_emission_probabilities[obs][i_state_result] += 1
+                    i_sub_s += 1
+
+            i_iter += 1
 
     def viterbir(self, sequence_obs):
         def init_pi_matrix(voc_states, depth, start_state, visited_states):
@@ -586,15 +682,24 @@ class NGramModel:
 
         return (float(error_count) / float(length_result) * float(100))
 
-
     def compute_emission_probabilities(self, smoothing=None):
         for observable in self.__list_voc_obs:
             self.__observation_emission_probabilities[observable] = {}
             for state in self.__list_voc_states:
 
                 self.__observation_emission_probabilities[observable][state] = \
-                    -log10((self.__observation_emission_frequencies[observable][state] + self.__laplace_value) /
-                           (self.__state_transition_frequencies[1][state] + (len(self.__list_voc_obs) * self.__laplace_value)))
+                    -log10((self.__observation_emission_frequencies[observable][state] + self.__alpha_value) /
+                           (self.__state_transition_frequencies[1][state] + (len(self.__list_voc_obs) * self.__alpha_value)))
+
+    def get_alpha(self):
+        return self.__alpha_value
+
+    def get_interpolation(self):
+        return self.__interpolation_values
+
+    def get_n(self):
+        return self.__N
+
 
 def open_encoded_corpus_obs_state(s_filename):
     """
@@ -628,6 +733,7 @@ def open_encoded_corpus_obs_state(s_filename):
         s_line = f.readline()
     return np.array(list_tuples_obs_state)
 
+
 def open_vocabulary(s_filename):
     """
     Open a vocabulary file and return the list of words.
@@ -654,40 +760,98 @@ def open_vocabulary(s_filename):
             k += 1
     return dict_decode_encode, dict_encode_decode
 
-def main():
-    pass
+
+def main(args):
+    print(args)
+    path_corpus_train = args[0]
+    path_corpus_dev = args[1]
+    path_corpus_test = args[2]
+    path_voc_obs = args[3]
+    path_voc_state = args[4]
+
+    corpus_train = open_encoded_corpus_obs_state(path_corpus_train)
+    corpus_dev = open_encoded_corpus_obs_state(path_corpus_dev)
+    corpus_test = open_encoded_corpus_obs_state(path_corpus_test)
+    dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+    dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+
+
+    new = NGramModel(n=2)
+    st = time.time()
+    new.disc_training(corpus_train, dict_obs_encode_decode.keys(), dict_state_encode_decode.keys(), nbr_iteration=3)
+    print(time.time() - st)
+    new_result = new.test(corpus_test)
+    print(new_result)
+
 
 def save_object(obj, filename):
     with open(filename, 'wb') as output:
         pickle.dump(obj, output, pickle.HIGHEST_PROTOCOL)
+
 
 def load_object(filename):
     with open(filename, 'rb') as input:
         return pickle.load(input)
 
 if __name__ == "__main__":
-    # main()
-    path_corpus_train = sys.argv[1]
-    path_voc_obs = sys.argv[2]
-    path_voc_state = sys.argv[3]
-    path_corpus_test = sys.argv[4]
-    dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
-    dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
 
+    start = time.time()
+    arguments = docopt(__doc__)
+    if arguments['dev']:
+        main(arguments['ARBITRARY'])
 
+    elif arguments['train']:
+        path_corpus_train = arguments['CORPUS']
+        path_voc_obs = arguments['--obs']
+        path_voc_state = arguments['--state']
+        path_model = arguments['MODEL-FILE']
 
-    # x_alpha = 0.05
-    # alphas = [x_alpha * i for i in range(1, 21)]
-    # x_ip = 0.1
-    # ips = [x_ip * i for i in range(1, 11)]
-    # models = []
-    n = 2
-    a = 1
-    i = (0.9999999, 0.0000001)
-    start = time.clock()
-    new = NGramModel(n=n, laplace=a, interpolation=i)
-    new.ngram_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
-                       dict_state_encode_decode.keys())
-    err = new.test(open_encoded_corpus_obs_state(path_corpus_test))
-    print("%.5f%% d'erreur, %s-grammes, alpha = %s, interpolation value = %s, %.2fs" % (err, n, a, i, time.clock() - start))
+        dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+        dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+        n = int(arguments['--n'])
+        alpha = float(arguments['--alpha'])
+        if arguments['--interpolation'] == '(1.0,0.0)':
+            interpolation = tuple([1.0] + [0.0] * (n-1))
+        else:
+            interpolation = tuple([float(i) for i in arguments['--interpolation'].strip("() ").split(",")])
+        new = NGramModel(n=n, alpha=alpha, interpolation=interpolation)
+        print('Training of the new model: n = %s | alpha = %s | interpolation = %s' % (n, alpha, interpolation))
+        new.gen_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
+                         dict_state_encode_decode.keys())
+        print('Saving model to pickle-file: %s' % (path_model))
+        save_object(new, path_model)
 
+    elif arguments['test']:
+        path_corpus_test = arguments['CORPUS']
+        path_model = arguments['MODEL-FILE']
+        print("Loading model at: '%s'" % (path_model))
+        new = load_object(path_model)
+        print("Model loaded: n = %s | alpha = %s | interpolation = %s" % (new.get_n(), new.get_alpha(), new.get_interpolation()))
+        err = new.test(open_encoded_corpus_obs_state(path_corpus_test))
+        print("%.4f%% error rate on the testing corpus at: '%s'" % (err, path_corpus_test))
+
+    elif arguments['predict']:
+        path_model = arguments['MODEL-FILE']
+        path_voc_obs = arguments['--encode-obs']
+        path_voc_state = arguments['--decode-state']
+        sequence_input = arguments['SEQUENCE'].strip()
+
+        if path_voc_obs:
+            dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+            sequence = [dict_obs_decode_encode[obs] for obs in sequence_input.split()]
+        else:
+            sequence = sequence_input.split()
+
+        print("Loading model at: '%s'" % (path_model))
+        new = load_object(path_model)
+        print("Model loaded: n = %s | alpha = %s | interpolation = %s" % (new.get_n(), new.get_alpha(), new.get_interpolation()))
+        result = new.viterbir(sequence)
+        if path_voc_state:
+            dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+            result = [dict_state_encode_decode[state] for state in result]
+
+        print(sequence_input)
+        print(" ".join(['|'.center(len(sequence_input.split()[i])) for i in range(len(sequence))]))
+        print(" ".join([result[i].center(len(sequence_input.split()[i])) for i in range(len(sequence))]))
+
+    print("Execution time: %.2fs" % (time.time() - start))
