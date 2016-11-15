@@ -4,7 +4,8 @@ Tagger is a Part-Of-Speech (POS) tagger. It can build a model from a training co
 determine the sequence of POS that might have generated a sentence.
 
 Usage:
-  tagger.py train CORPUS MODEL-FILE --obs=VOC --state=VOC [--n=INT] [--alpha=FLOAT] [--interpolation=TUPLE]
+  tagger.py gen-train CORPUS MODEL-FILE --obs=VOC --state=VOC [--n=INT] [--alpha=FLOAT] [--interpolation=TUPLE]
+  tagger.py disc-train CORPUS MODEL-FILE --obs=VOC --state=VOC [--iteration=INT]
   tagger.py test CORPUS MODEL-FILE
   tagger.py predict SEQUENCE MODEL-FILE [--encode-obs=VOC] [--decode-state=VOC]
   tagger.py dev [ARBITRARY]...
@@ -25,6 +26,7 @@ Options:
   -h --help               Show this screen.
   --obs=VOC               Path to vocabulary of observables
   --state=VOC             Path to vocabulary of states
+  --iteration=INT         Integer specifying the number of iterations [default: 1]
   --n=INT                 Integer specifying the size of the n-gram [default: 2]
   --alpha=FLOAT           Float value used for 'add-alpha' smoothing [default: 1.0]
   --interpolation=TUPLE   Tuple of floats which have to be provided without spaces [default: (1.0,0.0)]
@@ -32,7 +34,6 @@ Options:
   --decode-state=VOC      Path to vocabulary of states. To use if you want a sequence of decoded states.
 """
 
-import sys
 import random
 import numpy as np
 from math import log10
@@ -44,13 +45,14 @@ from docopt import docopt
 
 class NGramModel:
 
-    def __init__(self, n=2, alpha=0.0, interpolation=(1.0, 0.0)):
+    def __init__(self, n=2, alpha=0.0, interpolation=(1.0, 0.0), iteration_number=1):
         self.__N = n
         self.__alpha_value = alpha
         if len(interpolation) != n or int(sum(interpolation)) != 1:
             raise ValueError("Interpolation values should be exactly of size %s for %s-gram models and they should"
                              " sum to 1." % (n, n))
         self.__interpolation_values = interpolation
+        self.__iteration_number = iteration_number
 
         self.__list_voc_states = []
         self.__list_voc_obs = []
@@ -256,7 +258,7 @@ class NGramModel:
         self.compute_emission_probabilities()
         return
 
-    def disc_training(self, corpus, list_voc_obs, list_voc_states, nbr_iteration, sub_sequence_delimiter=(0, 0)):
+    def disc_training(self, corpus, list_voc_obs, list_voc_states, sub_sequence_delimiter=(0, 0)):
 
         if len(self.__list_voc_obs) == 0:
             self.__list_voc_obs = list(list_voc_obs) + [self.__start_obs_state[0]] + [self.__end_obs_state[0]]
@@ -288,7 +290,7 @@ class NGramModel:
             sub_sequences.append([sub_sequence_obs, sub_sequence_states])
             i_seq += 1
         i_iter = 0
-        while i_iter < nbr_iteration:
+        while i_iter < self.__iteration_number:
             shuffled_sub_sequences = copy.deepcopy(sub_sequences)
             random.shuffle(shuffled_sub_sequences)
             for sub_s in shuffled_sub_sequences:
@@ -667,6 +669,12 @@ class NGramModel:
         return output
 
     def test(self, corpus):
+        """
+        Return the errror percentage on the corpus given as argument.
+
+        :param corpus:
+        :return:
+        """
         sequence_obs = corpus[:, 0]
         sequence_tags = corpus[:, 1]
 
@@ -776,12 +784,12 @@ def main(args):
     dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
 
 
-    new = NGramModel(n=2)
-    st = time.time()
-    new.disc_training(corpus_train, dict_obs_encode_decode.keys(), dict_state_encode_decode.keys(), nbr_iteration=3)
-    print(time.time() - st)
-    new_result = new.test(corpus_test)
-    print(new_result)
+    new = NGramModel(n=2, iteration_number=3)
+    percentages = [20, 40, 60, 80, 100]
+    for p in percentages:
+        new.disc_training(corpus_train[:int(len(corpus_train) * p / 100)], dict_obs_encode_decode.keys(), dict_state_encode_decode.keys())
+        new_result = new.test(corpus_test)
+        print(str(p) + ",", new_result)
 
 
 def save_object(obj, filename):
@@ -800,7 +808,7 @@ if __name__ == "__main__":
     if arguments['dev']:
         main(arguments['ARBITRARY'])
 
-    elif arguments['train']:
+    elif arguments['gen-train']:
         path_corpus_train = arguments['CORPUS']
         path_voc_obs = arguments['--obs']
         path_voc_state = arguments['--state']
@@ -815,8 +823,24 @@ if __name__ == "__main__":
         else:
             interpolation = tuple([float(i) for i in arguments['--interpolation'].strip("() ").split(",")])
         new = NGramModel(n=n, alpha=alpha, interpolation=interpolation)
-        print('Training of the new model: n = %s | alpha = %s | interpolation = %s' % (n, alpha, interpolation))
+        print('Generative training of the new model: n = %s | alpha = %s | interpolation = %s' % (n, alpha, interpolation))
         new.gen_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
+                         dict_state_encode_decode.keys())
+        print('Saving model to pickle-file: %s' % (path_model))
+        save_object(new, path_model)
+
+    elif arguments['disc-train']:
+        path_corpus_train = arguments['CORPUS']
+        path_voc_obs = arguments['--obs']
+        path_voc_state = arguments['--state']
+        path_model = arguments['MODEL-FILE']
+
+        dict_obs_decode_encode, dict_obs_encode_decode = open_vocabulary(path_voc_obs)
+        dict_state_decode_encode, dict_state_encode_decode = open_vocabulary(path_voc_state)
+        r = int(arguments['--iteration'])
+        new = NGramModel(iteration_number=r)
+        print('Discriminant training of the new model: iteration number = %s' % (r))
+        new.disc_training(open_encoded_corpus_obs_state(path_corpus_train), dict_obs_encode_decode.keys(),
                          dict_state_encode_decode.keys())
         print('Saving model to pickle-file: %s' % (path_model))
         save_object(new, path_model)
